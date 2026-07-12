@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import Dashboard from "./Dashboard";
 
 type Member = {
   id: number; name: string; role: string; industry: string; currentLevel: number;
@@ -43,7 +44,7 @@ const stageMeta = [
 function stageColor(stage: string) { return stageMeta.find((item) => item.label === stage)?.color || "#3977f6"; }
 function initials(name: string) { return name.slice(-2); }
 
-export default function Home() {
+function LegacyHome() {
   const [activeNav, setActiveNav] = useState("总览");
   const [selectedLevel, setSelectedLevel] = useState<Level | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
@@ -212,4 +213,8 @@ export default function Home() {
       {toast && <div className="toast">{toast}</div>}
     </main>
   );
+}
+
+export default function Home() {
+  return <Dashboard levels={levels} industryAnchors={industryAnchors} stageMeta={stageMeta} />;
 }
