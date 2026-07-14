@@ -7,13 +7,13 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = requestHeaders.get("x-forwarded-host") || requestHeaders.get("host") || "localhost:3000";
   const protocol = requestHeaders.get("x-forwarded-proto") || (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
-  const title = "千问计划 · AI 能力爬坡管理台";
-  const description = "面向新质、能源、政务与高校团队的 AI 能力十级爬坡体系与成长管理平台。";
+  const title = "千问计划 · AI 能力成长系统";
+  const description = "证据驱动的 AI 能力成长、晋级评审与团队资产管理平台。";
   return {
     title,
     description,
     icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
-    openGraph: { title, description, type: "website", images: [{ url: `${origin}/og.png`, width: 1200, height: 630, alt: "千问计划 AI 能力十级爬坡体系" }] },
+    openGraph: { title, description, type: "website", images: [{ url: `${origin}/og.png`, width: 1200, height: 630, alt: "千问计划 AI 能力成长、评审与资产管理系统" }] },
     twitter: { card: "summary_large_image", title, description, images: [`${origin}/og.png`] },
   };
 }
