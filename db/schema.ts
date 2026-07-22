@@ -7,6 +7,7 @@ export const members = sqliteTable("members", {
   name: text("name").notNull(),
   role: text("role").notNull(),
   industry: text("industry").notNull(),
+  groupName: text("group_name").notNull().default("综合组"),
   currentLevel: integer("current_level").notNull().default(1),
   selfLevel: integer("self_level").notNull().default(1),
   targetLevel: integer("target_level").notNull().default(3),
@@ -39,6 +40,7 @@ export const evidences = sqliteTable("evidences", {
   url: text("url").notNull().default(""),
   outcome: text("outcome").notNull().default(""),
   status: text("status").notNull().default("有效"),
+  nominateAsset: integer("nominate_asset").notNull().default(0),
   createdByEmail: text("created_by_email").notNull(),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
@@ -52,6 +54,7 @@ export const reviews = sqliteTable("reviews", {
   cycle: text("cycle").notNull(),
   reviewerEmail: text("reviewer_email").notNull().default(""),
   reviewerName: text("reviewer_name").notNull().default("待分配"),
+  frameworkVersionId: integer("framework_version_id").notNull().default(0),
   feedback: text("feedback").notNull().default(""),
   submittedAt: text("submitted_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   reviewedAt: text("reviewed_at").notNull().default(""),
@@ -64,6 +67,7 @@ export const levelHistory = sqliteTable("level_history", {
   toLevel: integer("to_level").notNull(),
   decision: text("decision").notNull(),
   reviewerEmail: text("reviewer_email").notNull(),
+  frameworkVersionId: integer("framework_version_id").notNull().default(0),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -84,11 +88,41 @@ export const assets = sqliteTable("assets", {
   type: text("type").notNull(),
   industry: text("industry").notNull(),
   ownerMemberId: integer("owner_member_id").notNull(),
+  sourceEvidenceId: integer("source_evidence_id").notNull().default(0),
   reviewStatus: text("review_status").notNull().default("待审核"),
   complianceStatus: text("compliance_status").notNull().default("已自查"),
   reusePeople: integer("reuse_people").notNull().default(0),
   reuseClients: integer("reuse_clients").notNull().default(0),
   url: text("url").notNull().default(""),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const frameworkVersions = sqliteTable("framework_versions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  versionName: text("version_name").notNull(),
+  status: text("status").notNull().default("草稿"),
+  changeNote: text("change_note").notNull().default(""),
+  createdByEmail: text("created_by_email").notNull().default("system"),
+  publishedAt: text("published_at").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const frameworkLevels = sqliteTable("framework_levels", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  frameworkVersionId: integer("framework_version_id").notNull(),
+  level: integer("level").notNull(),
+  title: text("title").notNull(),
+  role: text("role").notNull(),
+  stage: text("stage").notNull(),
+  definition: text("definition").notNull(),
+  standard: text("standard").notNull(),
+  abilitiesJson: text("abilities_json").notNull().default("[]"),
+  criteriaJson: text("criteria_json").notNull().default("[]"),
+  practicesJson: text("practices_json").notNull().default("[]"),
+  path: text("path").notNull().default(""),
+  badgesJson: text("badges_json").notNull().default("[]"),
+  resourcesJson: text("resources_json").notNull().default("[]"),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

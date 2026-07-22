@@ -38,6 +38,7 @@ export type WorkspaceMember = {
   name: string;
   role: string;
   industry: string;
+  groupName: string;
   currentLevel: number;
   selfLevel: number;
   targetLevel: number;
@@ -64,6 +65,7 @@ export type Evidence = {
   url: string;
   outcome: string;
   status: string;
+  nominateAsset: number;
   createdAt: string;
 };
 
@@ -76,6 +78,8 @@ export type Review = {
   state: string;
   cycle: string;
   reviewerName: string;
+  reviewerEmail: string;
+  frameworkVersionId: number;
   feedback: string;
   evidenceCount: number;
   submittedAt: string;
@@ -88,6 +92,7 @@ export type AssetRecord = {
   type: string;
   industry: string;
   ownerName: string;
+  sourceEvidenceId: number;
   reviewStatus: string;
   complianceStatus: string;
   reusePeople: number;
@@ -103,6 +108,31 @@ export type WorkspaceUser = {
   memberId: number;
 };
 
+export type ReviewerOption = {
+  email: string;
+  displayName: string;
+  role: "reviewer" | "admin";
+  memberId: number;
+  groupName: string;
+  industry: string;
+  pendingCount: number;
+};
+
+export type ManagedWorkspaceUser = WorkspaceUser & {
+  groupName: string;
+  industry: string;
+};
+
+export type FrameworkVersion = {
+  id: number;
+  versionName: string;
+  status: string;
+  changeNote: string;
+  publishedAt: string;
+  updatedAt: string;
+  levels: LevelDefinition[];
+};
+
 export type WorkspacePayload = {
   authenticated: boolean;
   me: WorkspaceUser | null;
@@ -111,6 +141,13 @@ export type WorkspacePayload = {
   evidences: Evidence[];
   reviews: Review[];
   assets: AssetRecord[];
+  reviewers: ReviewerOption[];
+  workspaceUsers: ManagedWorkspaceUser[];
+  levels: LevelDefinition[];
+  framework: {
+    published: FrameworkVersion;
+    draft: FrameworkVersion | null;
+  };
   metrics: {
     memberCount: number;
     average: number;

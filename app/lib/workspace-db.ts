@@ -1,15 +1,16 @@
 import { env } from "cloudflare:workers";
 import type { ChatGPTUser } from "../chatgpt-auth";
+import { levels as defaultLevels } from "../data";
 
 const seedMembers = [
-  ["林晓", "行业解决方案经理", "能源", 4, 4, 6, "进行中", "待补证", "补齐可复用资产与量化提效数据", "完成巡检报告 Skill，邀请 6 位同事试用", "能源安全合规知识库"],
-  ["陈墨", "售前架构师", "新质", 6, 6, 7, "正常", "已提交", "需要完成客户测试环境集成 POC", "打通 MES 测试接口并沉淀 trace 案例", "对接 PLM / MES 测试环境"],
-  ["周宁", "客户经理", "高校", 3, 4, 5, "进行中", "草稿", "AI Coding 原型经验不足", "两周内完成招生咨询智能体原型", "科研文献分析原型"],
-  ["王璐", "解决方案专家", "政务", 5, 5, 6, "正常", "评审中", "复用人数尚未达标", "将政策比对 Skill 发布至团队仓库", "等保合规话术库"],
-  ["赵凯", "技术顾问", "能源", 7, 7, 8, "有风险", "待补证", "缺少完整评测与上线应用", "为两个重点商机设计定制评测集", "生产调度系统集成"],
-  ["苏雨", "客户成功", "高校", 2, 2, 3, "进行中", "草稿", "客户现场演示与故障预案不足", "主动申请一次客户演示并完成预案", "智慧教务场景演示"],
-  ["方晨", "产品运营", "政务", 4, 4, 5, "正常", "草稿", "售前原型尚未进入真实商机", "认领 12345 工单分派原型", "12345 工单智能分派"],
-  ["唐峰", "行业总监", "新质", 8, 8, 9, "正常", "已提交", "外部影响力数据未达标", "持续运营开源项目并完成客户高层分享", "芯片行业评测方法论"],
+  ["林晓", "行业解决方案经理", "能源", "能源组", 4, 4, 6, "进行中", "待补证", "补齐可复用资产与量化提效数据", "完成巡检报告 Skill，邀请 6 位同事试用", "能源安全合规知识库"],
+  ["陈墨", "售前架构师", "新质", "新质组", 6, 6, 7, "正常", "已提交", "需要完成客户测试环境集成 POC", "打通 MES 测试接口并沉淀 trace 案例", "对接 PLM / MES 测试环境"],
+  ["周宁", "客户经理", "高校", "高校组", 3, 4, 5, "进行中", "草稿", "AI Coding 原型经验不足", "两周内完成招生咨询智能体原型", "科研文献分析原型"],
+  ["王璐", "解决方案专家", "政务", "政务组", 5, 5, 6, "正常", "评审中", "复用人数尚未达标", "将政策比对 Skill 发布至团队仓库", "等保合规话术库"],
+  ["赵凯", "技术顾问", "能源", "能源组", 7, 7, 8, "有风险", "待补证", "缺少完整评测与上线应用", "为两个重点商机设计定制评测集", "生产调度系统集成"],
+  ["苏雨", "客户成功", "高校", "高校组", 2, 2, 3, "进行中", "草稿", "客户现场演示与故障预案不足", "主动申请一次客户演示并完成预案", "智慧教务场景演示"],
+  ["方晨", "产品运营", "政务", "政务组", 4, 4, 5, "正常", "草稿", "售前原型尚未进入真实商机", "认领 12345 工单分派原型", "12345 工单智能分派"],
+  ["唐峰", "行业总监", "新质", "新质组", 8, 8, 9, "正常", "已提交", "外部影响力数据未达标", "持续运营开源项目并完成客户高层分享", "芯片行业评测方法论"],
 ] as const;
 
 const createStatements = [
@@ -19,6 +20,7 @@ const createStatements = [
     name TEXT NOT NULL,
     role TEXT NOT NULL,
     industry TEXT NOT NULL,
+    group_name TEXT NOT NULL DEFAULT '综合组',
     current_level INTEGER NOT NULL DEFAULT 1,
     self_level INTEGER NOT NULL DEFAULT 1,
     target_level INTEGER NOT NULL DEFAULT 3,
@@ -49,6 +51,7 @@ const createStatements = [
     url TEXT NOT NULL DEFAULT '',
     outcome TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT '有效',
+    nominate_asset INTEGER NOT NULL DEFAULT 0,
     created_by_email TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
@@ -61,6 +64,7 @@ const createStatements = [
     cycle TEXT NOT NULL,
     reviewer_email TEXT NOT NULL DEFAULT '',
     reviewer_name TEXT NOT NULL DEFAULT '待分配',
+    framework_version_id INTEGER NOT NULL DEFAULT 0,
     feedback TEXT NOT NULL DEFAULT '',
     submitted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     reviewed_at TEXT NOT NULL DEFAULT ''
@@ -72,6 +76,7 @@ const createStatements = [
     to_level INTEGER NOT NULL,
     decision TEXT NOT NULL,
     reviewer_email TEXT NOT NULL,
+    framework_version_id INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
   `CREATE TABLE IF NOT EXISTS growth_tasks (
@@ -90,6 +95,7 @@ const createStatements = [
     type TEXT NOT NULL,
     industry TEXT NOT NULL,
     owner_member_id INTEGER NOT NULL,
+    source_evidence_id INTEGER NOT NULL DEFAULT 0,
     review_status TEXT NOT NULL DEFAULT '待审核',
     compliance_status TEXT NOT NULL DEFAULT '已自查',
     reuse_people INTEGER NOT NULL DEFAULT 0,
@@ -106,6 +112,33 @@ const createStatements = [
     detail TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
+  `CREATE TABLE IF NOT EXISTS framework_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT '草稿',
+    change_note TEXT NOT NULL DEFAULT '',
+    created_by_email TEXT NOT NULL DEFAULT 'system',
+    published_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS framework_levels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    framework_version_id INTEGER NOT NULL,
+    level INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    role TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    definition TEXT NOT NULL,
+    standard TEXT NOT NULL,
+    abilities_json TEXT NOT NULL DEFAULT '[]',
+    criteria_json TEXT NOT NULL DEFAULT '[]',
+    practices_json TEXT NOT NULL DEFAULT '[]',
+    path TEXT NOT NULL DEFAULT '',
+    badges_json TEXT NOT NULL DEFAULT '[]',
+    resources_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
 ];
 
 export async function ensureWorkspaceDatabase() {
@@ -118,36 +151,67 @@ export async function ensureWorkspaceDatabase() {
     db.prepare("CREATE INDEX IF NOT EXISTS asset_industry_idx ON assets (industry)"),
   ]);
 
-  await ensureMemberColumns();
+  await ensureWorkspaceColumns();
+  await db.batch([
+    db.prepare("CREATE INDEX IF NOT EXISTS members_group_idx ON members (group_name)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS framework_level_version_idx ON framework_levels (framework_version_id, level)"),
+  ]);
 
   const count = await db.prepare("SELECT COUNT(*) AS count FROM members").first<{ count: number }>();
   if (!count?.count) {
     await db.batch(seedMembers.map(member => db.prepare(`
       INSERT INTO members (
-        name, role, industry, current_level, self_level, target_level,
+        name, role, industry, group_name, current_level, self_level, target_level,
         target_date, status, review_status, gap, plan, next_task
-      ) VALUES (?, ?, ?, ?, ?, ?, '2026-09-30', ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, '2026-09-30', ?, ?, ?, ?, ?)
     `).bind(...member)));
   }
 
   await seedWorkspaceData();
+  await seedFramework();
 }
 
-async function ensureMemberColumns() {
+async function ensureWorkspaceColumns() {
   const database = env.DB;
-  const info = await database.prepare("PRAGMA table_info(members)").all<{ name: string }>();
-  const columns = new Set(info.results.map(column => column.name));
-  const statements: Array<{ name: string; sql: string }> = [
-    { name: "user_email", sql: "ALTER TABLE members ADD COLUMN user_email TEXT" },
-    { name: "self_level", sql: "ALTER TABLE members ADD COLUMN self_level INTEGER NOT NULL DEFAULT 1" },
-    { name: "review_status", sql: "ALTER TABLE members ADD COLUMN review_status TEXT NOT NULL DEFAULT '草稿'" },
-    { name: "last_checkin", sql: "ALTER TABLE members ADD COLUMN last_checkin TEXT NOT NULL DEFAULT ''" },
+  const statements: Array<{ table: string; name: string; sql: string }> = [
+    { table: "members", name: "user_email", sql: "ALTER TABLE members ADD COLUMN user_email TEXT" },
+    { table: "members", name: "self_level", sql: "ALTER TABLE members ADD COLUMN self_level INTEGER NOT NULL DEFAULT 1" },
+    { table: "members", name: "review_status", sql: "ALTER TABLE members ADD COLUMN review_status TEXT NOT NULL DEFAULT '草稿'" },
+    { table: "members", name: "last_checkin", sql: "ALTER TABLE members ADD COLUMN last_checkin TEXT NOT NULL DEFAULT ''" },
+    { table: "members", name: "group_name", sql: "ALTER TABLE members ADD COLUMN group_name TEXT NOT NULL DEFAULT '综合组'" },
+    { table: "evidences", name: "nominate_asset", sql: "ALTER TABLE evidences ADD COLUMN nominate_asset INTEGER NOT NULL DEFAULT 0" },
+    { table: "reviews", name: "framework_version_id", sql: "ALTER TABLE reviews ADD COLUMN framework_version_id INTEGER NOT NULL DEFAULT 0" },
+    { table: "level_history", name: "framework_version_id", sql: "ALTER TABLE level_history ADD COLUMN framework_version_id INTEGER NOT NULL DEFAULT 0" },
+    { table: "assets", name: "source_evidence_id", sql: "ALTER TABLE assets ADD COLUMN source_evidence_id INTEGER NOT NULL DEFAULT 0" },
   ];
   for (const statement of statements) {
-    if (!columns.has(statement.name)) await database.prepare(statement.sql).run();
+    const info = await database.prepare(`PRAGMA table_info(${statement.table})`).all<{ name: string }>();
+    if (!info.results.some(column => column.name === statement.name)) await database.prepare(statement.sql).run();
   }
-  if (!columns.has("self_level")) await database.prepare("UPDATE members SET self_level = current_level").run();
+  await database.prepare("UPDATE members SET self_level = current_level WHERE self_level IS NULL").run();
+  await database.prepare("UPDATE members SET group_name = CASE WHEN industry = '未分配' THEN '综合组' ELSE industry || '组' END WHERE group_name = '综合组' AND industry != '未分配'").run();
   await database.prepare("CREATE UNIQUE INDEX IF NOT EXISTS members_user_email_unique ON members (user_email)").run();
+}
+
+async function seedFramework() {
+  const database = env.DB;
+  const count = await database.prepare("SELECT COUNT(*) AS count FROM framework_versions").first<{ count: number }>();
+  if (count?.count) return;
+  const result = await database.prepare(`
+    INSERT INTO framework_versions (version_name, status, change_note, created_by_email, published_at)
+    VALUES ('v1.0', '已发布', '十级能力体系初始版本', 'system', CURRENT_TIMESTAMP)
+  `).run();
+  const versionId = Number(result.meta.last_row_id);
+  await database.batch(defaultLevels.map(level => database.prepare(`
+    INSERT INTO framework_levels (
+      framework_version_id, level, title, role, stage, definition, standard,
+      abilities_json, criteria_json, practices_json, path, badges_json, resources_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    versionId, level.level, level.title, level.role, level.stage, level.definition, level.standard,
+    JSON.stringify(level.abilities), JSON.stringify(level.criteria), JSON.stringify(level.practices), level.path,
+    JSON.stringify(level.badges || []), JSON.stringify(level.resources),
+  )));
 }
 
 async function seedWorkspaceData() {
@@ -205,6 +269,13 @@ async function seedWorkspaceData() {
       ), review_status)
     `),
   ]);
+
+  const systemReviewer = await db.prepare("SELECT email FROM workspace_users WHERE role IN ('reviewer','admin') ORDER BY CASE role WHEN 'admin' THEN 1 ELSE 2 END LIMIT 1").first<{ email: string }>();
+  if (systemReviewer) {
+    const reviewer = await db.prepare("SELECT display_name AS displayName FROM workspace_users WHERE email = ?").bind(systemReviewer.email).first<{ displayName: string }>();
+    await db.prepare("UPDATE reviews SET reviewer_email = ?, reviewer_name = ? WHERE reviewer_email = ''")
+      .bind(systemReviewer.email, reviewer?.displayName || "主评人").run();
+  }
 }
 
 export async function ensureWorkspaceUser(user: ChatGPTUser) {
@@ -219,9 +290,9 @@ export async function ensureWorkspaceUser(user: ChatGPTUser) {
   const role = userCount?.count ? "member" : "admin";
   const memberResult = await db.prepare(`
     INSERT INTO members (
-      user_email, name, role, industry, current_level, self_level, target_level,
+      user_email, name, role, industry, group_name, current_level, self_level, target_level,
       target_date, status, review_status, gap, plan, next_task
-    ) VALUES (?, ?, ?, '未分配', 1, 1, 3, '2026-09-30', '进行中', '草稿', '待完成首次自评', '完成个人能力定位并添加第一条证据', '完成首次能力定位')
+    ) VALUES (?, ?, ?, '未分配', '综合组', 1, 1, 3, '2026-09-30', '进行中', '草稿', '待完成首次自评', '完成个人能力定位并添加第一条证据', '完成首次能力定位')
   `).bind(user.email, user.displayName, role === "admin" ? "能力管理员" : "团队成员").run();
   const memberId = Number(memberResult.meta.last_row_id);
   await db.prepare("INSERT INTO workspace_users (email, display_name, role, member_id) VALUES (?, ?, ?, ?)")

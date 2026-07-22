@@ -25,9 +25,15 @@ test("keeps the product information architecture and trust boundaries explicit",
     readFile(new URL("app/data.ts", root), "utf8"),
   ]);
 
-  for (const label of ["我的成长", "能力体系", "Review", "团队", "资产"]) {
+  for (const label of ["我的成长", "能力阶梯", "评审中心", "团队"]) {
     assert.match(dashboard, new RegExp(label));
   }
+  assert.doesNotMatch(dashboard, /id: "assets"/);
+  assert.match(dashboard, /成员概览/);
+  assert.match(dashboard, /成果库/);
+  assert.match(dashboard, /选择本次主评人/);
+  assert.match(dashboard, /十级能力阶梯/);
+  assert.match(dashboard, /成员与评审人/);
   assert.match(dashboard, /当前认证/);
   assert.match(dashboard, /认证层级不可自改/);
   assert.match(dashboard, /complianceConfirmed/);
@@ -37,9 +43,19 @@ test("keeps the product information architecture and trust boundaries explicit",
   assert.match(api, /status: 401/);
   assert.match(api, /authorizedMemberId/);
   assert.match(api, /review_decision/);
+  assert.match(api, /save_framework_level/);
+  assert.match(api, /publish_framework/);
+  assert.match(api, /reviewerEmail/);
+  assert.match(api, /只能处理分配给自己的评审/);
+  assert.match(api, /update_user_access/);
+  assert.match(api, /review_asset/);
   assert.match(api, /ownerName: "团队成员"/);
   assert.match(database, /level_history/);
   assert.match(database, /audit_logs/);
+  assert.match(database, /framework_versions/);
+  assert.match(database, /framework_levels/);
+  assert.match(database, /group_name/);
+  assert.match(database, /nominate_asset/);
 
   for (let level = 1; level <= 10; level += 1) {
     assert.match(levels, new RegExp(`level: ${level},`));

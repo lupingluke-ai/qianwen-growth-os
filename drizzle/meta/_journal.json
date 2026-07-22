@@ -15,6 +15,13 @@
       "when": 1784041877227,
       "tag": "0001_melodic_hobgoblin",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784686125051,
+      "tag": "0002_long_proudstar",
+      "breakpoints": true
     }
   ]
 }
