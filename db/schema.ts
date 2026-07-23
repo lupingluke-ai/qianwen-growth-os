@@ -1,15 +1,14 @@
-import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
-export const members = sqliteTable("members", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  userEmail: text("user_email").unique(),
+export const members = pgTable("members", {
+  id: serial("id").primaryKey(),
+  userEmail: text("user_email"),
   name: text("name").notNull(),
   role: text("role").notNull(),
   industry: text("industry").notNull(),
   groupName: text("group_name").notNull().default("综合组"),
-  currentLevel: integer("current_level").notNull().default(1),
-  selfLevel: integer("self_level").notNull().default(1),
+  currentLevel: integer("current_level").notNull().default(0),
+  selfLevel: integer("self_level").notNull().default(0),
   targetLevel: integer("target_level").notNull().default(3),
   targetDate: text("target_date").notNull().default("2026-09-30"),
   status: text("status").notNull().default("进行中"),
@@ -18,21 +17,27 @@ export const members = sqliteTable("members", {
   plan: text("plan").notNull().default(""),
   evidence: text("evidence").notNull().default(""),
   nextTask: text("next_task").notNull().default(""),
-  lastCheckin: text("last_checkin").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+  lastCheckin: timestamp("last_checkin", { mode: "string" }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+}, table => [
+  uniqueIndex("members_user_email_unique").on(table.userEmail),
+  index("members_industry_idx").on(table.industry),
+  index("members_group_idx").on(table.groupName),
+]);
 
-export const workspaceUsers = sqliteTable("workspace_users", {
+export const workspaceUsers = pgTable("workspace_users", {
   email: text("email").primaryKey(),
   displayName: text("display_name").notNull(),
   role: text("role").notNull().default("member"),
-  memberId: integer("member_id").notNull(),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  memberId: integer("member_id").notNull().references(() => members.id),
+  passwordHash: text("password_hash").notNull().default(""),
+  dingtalkUnionId: text("dingtalk_union_id"),
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });
 
-export const evidences = sqliteTable("evidences", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  memberId: integer("member_id").notNull(),
+export const evidences = pgTable("evidences", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id").notNull().references(() => members.id),
   level: integer("level").notNull(),
   criterionKey: text("criterion_key").notNull(),
   title: text("title").notNull(),
@@ -42,12 +47,14 @@ export const evidences = sqliteTable("evidences", {
   status: text("status").notNull().default("有效"),
   nominateAsset: integer("nominate_asset").notNull().default(0),
   createdByEmail: text("created_by_email").notNull(),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+}, table => [
+  index("evidence_member_idx").on(table.memberId),
+]);
 
-export const reviews = sqliteTable("reviews", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  memberId: integer("member_id").notNull(),
+export const reviews = pgTable("reviews", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id").notNull().references(() => members.id),
   fromLevel: integer("from_level").notNull(),
   targetLevel: integer("target_level").notNull(),
   state: text("state").notNull().default("已提交"),
@@ -56,61 +63,65 @@ export const reviews = sqliteTable("reviews", {
   reviewerName: text("reviewer_name").notNull().default("待分配"),
   frameworkVersionId: integer("framework_version_id").notNull().default(0),
   feedback: text("feedback").notNull().default(""),
-  submittedAt: text("submitted_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  reviewedAt: text("reviewed_at").notNull().default(""),
-});
+  submittedAt: timestamp("submitted_at", { mode: "string" }).notNull().defaultNow(),
+  reviewedAt: timestamp("reviewed_at", { mode: "string" }),
+}, table => [
+  index("review_member_idx").on(table.memberId),
+]);
 
-export const levelHistory = sqliteTable("level_history", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  memberId: integer("member_id").notNull(),
+export const levelHistory = pgTable("level_history", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id").notNull().references(() => members.id),
   fromLevel: integer("from_level").notNull(),
   toLevel: integer("to_level").notNull(),
   decision: text("decision").notNull(),
   reviewerEmail: text("reviewer_email").notNull(),
   frameworkVersionId: integer("framework_version_id").notNull().default(0),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });
 
-export const growthTasks = sqliteTable("growth_tasks", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  memberId: integer("member_id").notNull(),
+export const growthTasks = pgTable("growth_tasks", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id").notNull().references(() => members.id),
   title: text("title").notNull(),
   dueDate: text("due_date").notNull(),
   status: text("status").notNull().default("进行中"),
   linkedLevel: integer("linked_level").notNull(),
   linkedAnchor: text("linked_anchor").notNull().default(""),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });
 
-export const assets = sqliteTable("assets", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const assets = pgTable("assets", {
+  id: serial("id").primaryKey(),
   title: text("title").notNull(),
   type: text("type").notNull(),
   industry: text("industry").notNull(),
-  ownerMemberId: integer("owner_member_id").notNull(),
+  ownerMemberId: integer("owner_member_id").notNull().references(() => members.id),
   sourceEvidenceId: integer("source_evidence_id").notNull().default(0),
   reviewStatus: text("review_status").notNull().default("待审核"),
   complianceStatus: text("compliance_status").notNull().default("已自查"),
   reusePeople: integer("reuse_people").notNull().default(0),
   reuseClients: integer("reuse_clients").notNull().default(0),
   url: text("url").notNull().default(""),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+  updatedAt: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+}, table => [
+  index("asset_industry_idx").on(table.industry),
+]);
 
-export const frameworkVersions = sqliteTable("framework_versions", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const frameworkVersions = pgTable("framework_versions", {
+  id: serial("id").primaryKey(),
   versionName: text("version_name").notNull(),
   status: text("status").notNull().default("草稿"),
   changeNote: text("change_note").notNull().default(""),
   createdByEmail: text("created_by_email").notNull().default("system"),
-  publishedAt: text("published_at").notNull().default(""),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  publishedAt: timestamp("published_at", { mode: "string" }),
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
 });
 
-export const frameworkLevels = sqliteTable("framework_levels", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  frameworkVersionId: integer("framework_version_id").notNull(),
+export const frameworkLevels = pgTable("framework_levels", {
+  id: serial("id").primaryKey(),
+  frameworkVersionId: integer("framework_version_id").notNull().references(() => frameworkVersions.id),
   level: integer("level").notNull(),
   title: text("title").notNull(),
   role: text("role").notNull(),
@@ -123,15 +134,19 @@ export const frameworkLevels = sqliteTable("framework_levels", {
   path: text("path").notNull().default(""),
   badgesJson: text("badges_json").notNull().default("[]"),
   resourcesJson: text("resources_json").notNull().default("[]"),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+  updatedAt: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+}, table => [
+  index("framework_level_version_idx").on(table.frameworkVersionId, table.level),
+]);
 
-export const auditLogs = sqliteTable("audit_logs", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const auditLogs = pgTable("audit_logs", {
+  id: serial("id").primaryKey(),
   actorEmail: text("actor_email").notNull(),
   action: text("action").notNull(),
   entityType: text("entity_type").notNull(),
   entityId: integer("entity_id").notNull(),
   detail: text("detail").notNull().default(""),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+}, table => [
+  index("audit_action_created_idx").on(table.action, table.createdAt),
+]);

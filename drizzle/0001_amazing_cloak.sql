@@ -1,0 +1,1 @@
+ALTER TABLE "workspace_users" ADD COLUMN "dingtalk_union_id" text;

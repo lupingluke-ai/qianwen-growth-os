@@ -17,10 +17,10 @@ test("defines the growth operating system shell and metadata", async () => {
 });
 
 test("keeps the product information architecture and trust boundaries explicit", async () => {
-  const [dashboard, api, database, css, levels] = await Promise.all([
+  const [dashboard, api, schema, css, levels] = await Promise.all([
     readFile(new URL("app/Dashboard.tsx", root), "utf8"),
     readFile(new URL("app/api/workspace/route.ts", root), "utf8"),
-    readFile(new URL("app/lib/workspace-db.ts", root), "utf8"),
+    readFile(new URL("db/schema.ts", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL("app/data.ts", root), "utf8"),
   ]);
@@ -37,7 +37,7 @@ test("keeps the product information architecture and trust boundaries explicit",
   assert.match(dashboard, /当前认证/);
   assert.match(dashboard, /认证层级不可自改/);
   assert.match(dashboard, /complianceConfirmed/);
-  assert.match(dashboard, /signin-with-chatgpt/);
+  assert.match(dashboard, /\/login/);
 
   assert.match(api, /getChatGPTUser/);
   assert.match(api, /status: 401/);
@@ -50,12 +50,12 @@ test("keeps the product information architecture and trust boundaries explicit",
   assert.match(api, /update_user_access/);
   assert.match(api, /review_asset/);
   assert.match(api, /ownerName: "团队成员"/);
-  assert.match(database, /level_history/);
-  assert.match(database, /audit_logs/);
-  assert.match(database, /framework_versions/);
-  assert.match(database, /framework_levels/);
-  assert.match(database, /group_name/);
-  assert.match(database, /nominate_asset/);
+  assert.match(schema, /level_history/);
+  assert.match(schema, /audit_logs/);
+  assert.match(schema, /framework_versions/);
+  assert.match(schema, /framework_levels/);
+  assert.match(schema, /group_name/);
+  assert.match(schema, /nominate_asset/);
 
   for (let level = 1; level <= 10; level += 1) {
     assert.match(levels, new RegExp(`level: ${level},`));

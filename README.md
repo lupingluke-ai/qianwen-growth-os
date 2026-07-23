@@ -23,10 +23,9 @@
 ## 技术栈
 
 - React 19 + Next.js 16
-- vinext + Cloudflare Workers
-- Cloudflare D1 + Drizzle ORM
-- Sign in with ChatGPT
-- OpenAI Sites 托管
+- Neon Postgres + Drizzle ORM
+- Auth.js v5（账号密码 + JWT 会话）
+- Vercel 托管
 
 ## 本地运行
 
@@ -34,8 +33,22 @@
 
 ```bash
 npm install
+cp .env.example .env.local   # 填入 AUTH_SECRET；DATABASE_URL 可留空（自动回退内嵌 Postgres）
+npm run db:seed              # 首次初始化演示数据（打印初始密码）
 npm run dev
 ```
+
+使用 Neon 时需先执行 `npm run db:migrate` 应用迁移；本地内嵌 Postgres（pglite，数据存于 `./.pglite`）会在首次启动时自动建表。
+
+## 部署到 Vercel
+
+```bash
+vercel login              # 首次需本人登录授权
+bash scripts/deploy.sh    # link → 检查 Neon/AUTH_SECRET → 迁移+seed → Preview
+bash scripts/deploy.sh --prod   # 冒烟通过后发布生产
+```
+
+首次部署前需在 Vercel Marketplace 安装 Neon 集成（自动注入 `DATABASE_URL`），脚本会检查并提示。
 
 常用命令：
 
@@ -44,6 +57,8 @@ npm run lint
 npm test
 npm run build
 npm run db:generate
+npm run db:migrate
+npm run db:seed
 ```
 
 ## 数据与权限
@@ -52,7 +67,7 @@ npm run db:generate
 - 登录成员只能维护自己的成长记录与材料。
 - 评审人可查看团队信息，但只能处理分配给自己的评审。
 - 管理员负责体系版本、成员权限、小组和团队成果审核。
-- D1 迁移位于 `drizzle/`，运行时也会兼容升级已有数据库。
+- Postgres 迁移位于 `drizzle/`，通过 `npm run db:migrate` 应用；演示数据由 `npm run db:seed` 一次性写入。
 
 ## 项目结构
 

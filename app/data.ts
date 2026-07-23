@@ -1,6 +1,7 @@
 import type { IndustryAnchor, LevelDefinition, StageMeta } from "./types";
 
 export const levels: LevelDefinition[] = [
+  { level: 0, title: "初识 AI", role: "AI 入门者", stage: "起步", definition: "了解 AI 基本概念，知道什么是大语言模型，准备开始使用 AI 工具提升工作效率。", standard: "完成首次 AI 对话体验", abilities: ["了解 AI 基本概念", "知道主流大模型", "完成首次对话"], criteria: [{ id: "first-chat", label: "完成首次 AI 对话", evidenceHint: "截图或记录" }, { id: "understand-ai", label: "了解 AI 能做什么", evidenceHint: "简要笔记" }, { id: "setup-tool", label: "完成工具环境搭建", evidenceHint: "工具截图" }], practices: ["注册并体验千问对话", "了解 AI 应用场景"], path: "注册千问账号，完成第一次对话体验，了解 AI 能帮你做什么。", resources: [{ label: "千问官网", url: "https://qianwen.aliyun.com/" }] },
   { level: 1, title: "开口会问", role: "AI 对话者", stage: "会用 AI", definition: "能与主流 C 端智能体有效对话，在严肃工作场景中获得可用输出，并了解 Qwen 模型家族。", standard: "完成 3 类真实工作任务", abilities: ["结构化提示词", "追问、拆解与自查", "模型选型", "理解幻觉与上下文"], criteria: [{ id: "task-3", label: "完成 3 类真实任务", evidenceHint: "提交任务前后对比与最终产出" }, { id: "qwen-map", label: "讲清 Qwen 家族选型", evidenceHint: "模型选型速查表或讲解记录" }, { id: "quality", label: "能迭代输出质量", evidenceHint: "至少 1 组提示词迭代记录" }], practices: ["会议纪要待办提取", "竞品资料速读", "周报初稿生成"], path: "连续 1 周每天用 AI 处理真实工作，同题对比提示词迭代前后的效果。", resources: [{ label: "Qwen 官方文档", url: "https://qwen.readthedocs.io/zh-cn/latest/" }, { label: "提示工程指南", url: "https://www.promptingguide.ai/zh" }] },
   { level: 2, title: "问以致用", role: "智能体操作者", stage: "会用 AI", definition: "熟练使用千问办公等通用智能体，掌握工作空间、定时任务和 Skill 基础。", standard: "2 个每周使用 ≥2 次的常态化应用", abilities: ["工作空间与文件管理", "配置定时任务", "组合 Skill", "理解 Agent 与 Chat"], criteria: [{ id: "routine-2", label: "跑通 2 个常态化应用", evidenceHint: "连续两周运行记录" }, { id: "workflow", label: "独立配置工作流", evidenceHint: "配置说明、截图或演示" }, { id: "business", label: "绑定真实工作场景", evidenceHint: "说明节省时间或提升质量" }], practices: ["客户拜访前情报汇总", "标书条款提取", "POC 报告整理"], path: "盘点每周重复工作，亲手搭建 2 个任务或 Skill 工作流并持续运行 2 周。", resources: [{ label: "钉钉开放平台", url: "https://open.dingtalk.com/document/" }] },
   { level: 3, title: "对客答问", role: "客户面前的演示者", stage: "会用 AI", definition: "能独立向客户汇报千问办公，针对客户需求编写 Skill，并在现场完成演示。", standard: "客户现场演示 + 定制 Skill + 故障兜底", abilities: ["产品价值与报价逻辑", "Skill 需求拆解与调试", "现场演示", "故障预案"], criteria: [{ id: "demo", label: "完成真实客户现场演示", evidenceHint: "议程、演示记录与客户反馈" }, { id: "skill", label: "交付 1 个客户定制 Skill", evidenceHint: "脱敏说明与运行结果" }, { id: "fallback", label: "具备演示兜底方案", evidenceHint: "故障预案与复盘" }], practices: ["真实客户现场演示", "客户需求定制 Skill", "产品汇报试讲"], path: "把日常工作迁移到千问办公；复刻团队 Skill 后再独立编写 3 个。", resources: [{ label: "Qwen-Agent", url: "https://github.com/QwenLM/Qwen-Agent" }] },
@@ -14,7 +15,7 @@ export const levels: LevelDefinition[] = [
 ];
 
 export const stageMeta: StageMeta[] = [
-  { label: "会用 AI", range: "L1–L3", color: "#3977f6", copy: "全员通用" },
+  { label: "会用 AI", range: "L0–L3", color: "#3977f6", copy: "全员通用" },
   { label: "会建 AI", range: "L4–L6", color: "#7c5ce5", copy: "岗位主赛道" },
   { label: "会解 AI", range: "L7–L9", color: "#e17a37", copy: "专家纵深" },
   { label: "会赢 AI", range: "L10", color: "#159b76", copy: "商业价值" },

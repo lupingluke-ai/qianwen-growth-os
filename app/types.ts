@@ -40,7 +40,7 @@ export type WorkspaceMember = {
   industry: string;
   groupName: string;
   currentLevel: number;
-  selfLevel: number;
+  selfLevel?: number;
   targetLevel: number;
   targetDate: string;
   progressStatus: string;
@@ -52,6 +52,7 @@ export type WorkspaceMember = {
   evidenceCount: number;
   pendingReviewId: number | null;
   overdueTasks: number;
+  checkedInThisMonth: boolean;
 };
 
 export type Evidence = {
@@ -92,6 +93,7 @@ export type AssetRecord = {
   type: string;
   industry: string;
   ownerName: string;
+  ownerMemberId: number;
   sourceEvidenceId: number;
   reviewStatus: string;
   complianceStatus: string;
@@ -133,6 +135,17 @@ export type FrameworkVersion = {
   levels: LevelDefinition[];
 };
 
+export type MonthlyReport = {
+  cycle: string;
+  promotions: { id: number; memberName: string; fromLevel: number; toLevel: number; createdAt: string }[];
+  newEvidenceCount: number;
+  newAssetCount: number;
+  publishedAssetCount: number;
+  updatedThisMonth: number;
+  memberCount: number;
+  participationRate: number;
+};
+
 export type WorkspacePayload = {
   authenticated: boolean;
   me: WorkspaceUser | null;
@@ -148,6 +161,7 @@ export type WorkspacePayload = {
     published: FrameworkVersion;
     draft: FrameworkVersion | null;
   };
+  monthlyReport: MonthlyReport | null;
   metrics: {
     memberCount: number;
     average: number;
@@ -157,6 +171,7 @@ export type WorkspacePayload = {
     atRisk: number;
     overdue: number;
     pendingReviews: number;
+    updatedThisMonth: number;
     evidenceCompletion: number;
     distribution: number[];
     reviewReady: number;
