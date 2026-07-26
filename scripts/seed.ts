@@ -140,7 +140,7 @@ async function main() {
   if (!Number(assetCount?.value)) {
     await db.insert(assets).values([
       { title: "能源巡检报告 Skill", type: "Skill", industry: "能源", ownerMemberId: byName.get("林晓") || memberRows[0].id, reviewStatus: "已发布", complianceStatus: "已审核", reusePeople: 8, reuseClients: 2, url: "https://github.com/example/energy-skill" },
-      { title: "政策条款智能比对", type: "知识库", industry: "政务", ownerMemberId: byName.get("王璐") || memberRows[0].id, reviewStatus: "审核中", complianceStatus: "已自查", reusePeople: 4, reuseClients: 1, url: "" },
+      { title: "政策条款智能比对", type: "知识库", industry: "政务", ownerMemberId: byName.get("王璐") || memberRows[0].id, reviewStatus: "待审核", complianceStatus: "已自查", reusePeople: 4, reuseClients: 1, url: "" },
       { title: "制造业评测方法论", type: "评测集", industry: "新质", ownerMemberId: byName.get("唐峰") || memberRows[0].id, reviewStatus: "已发布", complianceStatus: "已审核", reusePeople: 12, reuseClients: 3, url: "https://github.com/example/ai-eval" },
       { title: "招生咨询智能体原型", type: "原型", industry: "高校", ownerMemberId: byName.get("周宁") || memberRows[0].id, reviewStatus: "待补充", complianceStatus: "待复核", reusePeople: 2, reuseClients: 0, url: "" },
     ]);
@@ -182,6 +182,9 @@ async function main() {
       { memberName: "林晓", level: 6, criterionKey: "asset", title: "能源巡检报告 Skill 入库记录", kind: "仓库", url: "https://github.com/example/energy-skill", outcome: "8 人复用，已用于 2 家客户交流", status: "已核验" },
       { memberName: "陈墨", level: 7, criterionKey: "poc", title: "MES 测试环境集成 POC", kind: "报告", url: "", outcome: "已跑通工单查询与异常归因", status: "待核验" },
       { memberName: "唐峰", level: 9, criterionKey: "original", title: "制造业智能体评测方法论", kind: "仓库", url: "https://github.com/example/ai-eval", outcome: "支撑 2 个客户选型讨论", status: "待核验" },
+      // 在途申请至少配套 1 条对应层级证据，与提交前置条件一致
+      { memberName: "王璐", level: 6, criterionKey: "reuse", title: "政策比对知识库复用记录", kind: "使用记录", url: "", outcome: "4 人复用，支撑 1 个政务项目答疑", status: "待核验" },
+      { memberName: "赵凯", level: 8, criterionKey: "stability", title: "能源巡检应用稳定运行月报", kind: "报告", url: "", outcome: "上线 3 周零故障，日均调用 120 次", status: "待核验" },
     ];
     await db.insert(evidences).values(demoEvidences
       .filter(evidence => byName.has(evidence.memberName))

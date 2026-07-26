@@ -221,34 +221,33 @@ export async function POST(request: Request) {
 
 async function updateCheckin(session: SessionUser, payload: ActionPayload) {
   const memberId = await authorizedMemberId(session, payload.memberId);
-  const current = await first<{ currentLevel: number; targetLevel: number }>(sql`SELECT current_level AS "currentLevel", target_level AS "targetLevel" FROM members WHERE id = ${memberId}`);
+  const current = await first<{ currentLevel: number }>(sql`SELECT current_level AS "currentLevel" FROM members WHERE id = ${memberId}`);
   if (!current) throw new Error("成员不存在");
-  const targetLevel = Math.max(current.currentLevel, clampLevel(payload.targetLevel || current.currentLevel + 1));
-  if (targetLevel !== current.targetLevel) {
-    const active = await first(sql`SELECT id FROM reviews WHERE member_id = ${memberId} AND state IN ('已提交','评审中','待补证') LIMIT 1`);
-    if (active) throw new Error("有进行中的晋级申请，撤回后才能调整目标层级");
-  }
+  // 去掉“设目标”机制：下一级恒为 current+1（封顶 L10），target_level 仅作为下一级的内部记录自动维护
+  const nextLevel = clampLevel(current.currentLevel + 1);
   const progressStatus = ["正常", "进行中", "有风险", "阻塞"].includes(payload.progressStatus || "") ? payload.progressStatus! : "进行中";
   await run(sql`
-    UPDATE members SET target_level = ${targetLevel}, target_date = ${payload.targetDate || "2026-09-30"}, status = ${progressStatus},
+    UPDATE members SET target_level = ${nextLevel}, target_date = ${payload.targetDate || "2026-09-30"}, status = ${progressStatus},
       review_status = CASE WHEN review_status IN ('已通过','未通过') THEN '草稿' ELSE review_status END,
       gap = ${clean(payload.gap)}, plan = ${clean(payload.plan)}, next_task = ${clean(payload.nextTask)}, last_checkin = now(), updated_at = now()
     WHERE id = ${memberId}
   `);
-  await logAction(session.email, "更新周度进展", "member", memberId, `target=L${targetLevel}`);
+  await logAction(session.email, "更新周度进展", "member", memberId, `next=L${nextLevel}`);
 }
 
 async function completeOnboarding(session: SessionUser, payload: ActionPayload) {
   const memberId = session.memberId;
   const industry = ["高校", "新质", "能源", "政务", "通用"].includes(payload.industry || "") ? payload.industry! : "通用";
-  const targetLevel = Math.max(1, clampLevel(payload.targetLevel || 3));
+  // 去掉“设目标”机制：下一级恒为 current+1（封顶 L10）
+  const current = await first<{ currentLevel: number }>(sql`SELECT current_level AS "currentLevel" FROM members WHERE id = ${memberId}`);
+  const nextLevel = clampLevel((current?.currentLevel ?? 0) + 1);
   await run(sql`
-    UPDATE members SET industry = ${industry}, group_name = ${clean(payload.groupName) || "综合组"}, target_level = ${targetLevel},
+    UPDATE members SET industry = ${industry}, group_name = ${clean(payload.groupName) || "综合组"}, target_level = ${nextLevel},
       target_date = ${payload.targetDate || "2026-09-30"}, next_task = ${clean(payload.nextTask)},
       last_checkin = now(), updated_at = now()
     WHERE id = ${memberId}
   `);
-  await logAction(session.email, "完成首次引导", "member", memberId, `industry=${industry};target=L${targetLevel}`);
+  await logAction(session.email, "完成首次引导", "member", memberId, `industry=${industry};next=L${nextLevel}`);
 }
 
 async function addEvidence(session: SessionUser, payload: ActionPayload) {
@@ -306,18 +305,21 @@ async function deleteEvidence(session: SessionUser, payload: ActionPayload) {
 async function submitReview(session: SessionUser, payload: ActionPayload) {
   const memberId = await authorizedMemberId(session, payload.memberId);
   if (!payload.reviewerEmail) throw new Error("请选择主评人");
-  const member = await first<{ name: string; currentLevel: number; targetLevel: number }>(sql`
-    SELECT name, current_level AS "currentLevel", target_level AS "targetLevel" FROM members WHERE id = ${memberId}
+  const member = await first<{ name: string; currentLevel: number }>(sql`
+    SELECT name, current_level AS "currentLevel" FROM members WHERE id = ${memberId}
   `);
   if (!member) throw new Error("成员不存在");
+  // 去掉“设目标”机制：晋级申请恒为申请 current+1（封顶 L10）
+  const nextLevel = clampLevel(member.currentLevel + 1);
+  if (nextLevel === member.currentLevel) throw new Error("已达到最高层级，无需再申请晋级");
   const reviewer = await first<{ email: string; displayName: string; role: WorkspaceRole; memberId: number; dingtalkUnionId: string | null }>(sql`
     SELECT email, display_name AS "displayName", role, member_id AS "memberId", dingtalk_union_id AS "dingtalkUnionId"
     FROM workspace_users WHERE email = ${payload.reviewerEmail} AND role IN ('reviewer','admin')
   `);
   if (!reviewer) throw new Error("所选主评人当前不可用");
   if (reviewer.memberId === memberId) throw new Error("主评人不能选择自己");
-  const evidence = await first<{ count: number }>(sql`SELECT COUNT(*)::int AS count FROM evidences WHERE member_id = ${memberId} AND level = ${member.targetLevel}`);
-  if (!evidence?.count) throw new Error("至少添加 1 条目标层级证据后才能提交评审");
+  const evidence = await first<{ count: number }>(sql`SELECT COUNT(*)::int AS count FROM evidences WHERE member_id = ${memberId} AND level = ${nextLevel}`);
+  if (!evidence?.count) throw new Error("至少添加 1 条下一级证据后才能提交评审");
   const active = await first(sql`SELECT id FROM reviews WHERE member_id = ${memberId} AND state IN ('已提交','评审中','待补证') LIMIT 1`);
   if (active) throw new Error("已有进行中的晋级评审");
   const published = await first<{ id: number }>(sql`SELECT id FROM framework_versions WHERE status = '已发布' ORDER BY id DESC LIMIT 1`);
@@ -325,11 +327,11 @@ async function submitReview(session: SessionUser, payload: ActionPayload) {
   const cycle = new Date().toISOString().slice(0, 7);
   const inserted = await first<{ id: number }>(sql`
     INSERT INTO reviews (member_id, from_level, target_level, state, cycle, reviewer_email, reviewer_name, framework_version_id)
-    VALUES (${memberId}, ${member.currentLevel}, ${member.targetLevel}, '已提交', ${cycle}, ${reviewer.email}, ${reviewer.displayName}, ${published.id})
+    VALUES (${memberId}, ${member.currentLevel}, ${nextLevel}, '已提交', ${cycle}, ${reviewer.email}, ${reviewer.displayName}, ${published.id})
     RETURNING id
   `);
   await run(sql`UPDATE members SET review_status = '已提交', updated_at = now() WHERE id = ${memberId}`);
-  await logAction(session.email, "提交晋级评审", "review", Number(inserted?.id || 0), `L${member.currentLevel}->L${member.targetLevel};reviewer=${reviewer.email};framework=${published.id}`);
+  await logAction(session.email, "提交晋级评审", "review", Number(inserted?.id || 0), `L${member.currentLevel}->L${nextLevel};reviewer=${reviewer.email};framework=${published.id}`);
 
   // 钉钉通知评审人（必须 await：Vercel Serverless 在响应返回后会冻结进程，未 await 的 promise 会被终止）
   if (reviewer.dingtalkUnionId) {
@@ -337,7 +339,7 @@ async function submitReview(session: SessionUser, payload: ActionPayload) {
       reviewerUnionId: reviewer.dingtalkUnionId,
       memberName: member.name,
       fromLevel: member.currentLevel,
-      targetLevel: member.targetLevel,
+      targetLevel: nextLevel,
       detailUrl: "https://qianwen-growth-os.vercel.app",
     });
   } else {
@@ -384,14 +386,16 @@ async function reviewDecision(session: SessionUser, payload: ActionPayload) {
   if (session.role !== "admin" && review.reviewerEmail !== session.email) throw new Error("只能处理分配给自己的评审");
   await run(sql`UPDATE reviews SET state = ${payload.decision}, feedback = ${clean(payload.feedback)}, reviewed_at = now() WHERE id = ${review.id}`);
   if (payload.decision === "已通过") {
+    // 逐级爬坡防御：即使存量申请的 target_level 跨级，通过时也最多晋升一级
+    const promotedLevel = Math.min(review.targetLevel, review.fromLevel + 1);
     await run(sql`
-      UPDATE members SET current_level = ${review.targetLevel},
+      UPDATE members SET current_level = ${promotedLevel},
         review_status = '已通过', updated_at = now()
       WHERE id = ${review.memberId}
     `);
     await run(sql`
       INSERT INTO level_history (member_id, from_level, to_level, decision, reviewer_email, framework_version_id)
-      VALUES (${review.memberId}, ${review.fromLevel}, ${review.targetLevel}, '已通过', ${session.email}, ${review.frameworkVersionId})
+      VALUES (${review.memberId}, ${review.fromLevel}, ${promotedLevel}, '已通过', ${session.email}, ${review.frameworkVersionId})
     `);
   } else {
     await run(sql`UPDATE members SET review_status = ${payload.decision}, updated_at = now() WHERE id = ${review.memberId}`);

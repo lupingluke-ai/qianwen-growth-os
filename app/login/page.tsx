@@ -66,14 +66,14 @@ export default function LoginPage() {
           {busy ? "跳转中…" : "使用钉钉登录"}
         </button>
 
-        {/* 管理员密码登录入口 */}
+        {/* 账号密码登录入口 */}
         {!showPasswordForm && (
           <button
             type="button"
             className="login-toggle-link"
             onClick={() => setShowPasswordForm(true)}
           >
-            管理员密码登录 →
+            账号密码登录 →
           </button>
         )}
 
