@@ -94,11 +94,13 @@ export const growthTasks = pgTable("growth_tasks", {
 export const assets = pgTable("assets", {
   id: serial("id").primaryKey(),
   title: text("title").notNull(),
+  description: text("description"),
   type: text("type").notNull(),
   industry: text("industry").notNull(),
   ownerMemberId: integer("owner_member_id").notNull().references(() => members.id),
   sourceEvidenceId: integer("source_evidence_id").notNull().default(0),
   reviewStatus: text("review_status").notNull().default("待审核"),
+  reviewFeedback: text("review_feedback"),
   complianceStatus: text("compliance_status").notNull().default("已自查"),
   reusePeople: integer("reuse_people").notNull().default(0),
   reuseClients: integer("reuse_clients").notNull().default(0),

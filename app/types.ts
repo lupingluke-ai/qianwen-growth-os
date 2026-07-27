@@ -90,12 +90,14 @@ export type Review = {
 export type AssetRecord = {
   id: number;
   title: string;
+  description: string;
   type: string;
   industry: string;
   ownerName: string;
   ownerMemberId: number;
   sourceEvidenceId: number;
   reviewStatus: string;
+  reviewFeedback: string;
   complianceStatus: string;
   reusePeople: number;
   reuseClients: number;

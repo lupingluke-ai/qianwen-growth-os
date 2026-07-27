@@ -89,7 +89,7 @@ export default function LoginPage() {
                 <input
                   type="text"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={(e) => { setEmail(e.target.value); if (error) setError(""); }}
                   placeholder="例如 linxiao@qianwen"
                   autoComplete="username"
                   required
@@ -100,7 +100,7 @@ export default function LoginPage() {
                 <input
                   type="password"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) => { setPassword(e.target.value); if (error) setError(""); }}
                   placeholder="输入密码"
                   autoComplete="current-password"
                   required

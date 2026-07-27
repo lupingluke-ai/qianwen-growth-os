@@ -49,6 +49,7 @@ const actionPayloadSchema = z.object({
   feedback: z.string().optional(),
   assetId: z.number().int().optional(),
   assetType: z.string().optional(),
+  description: z.string().optional(),
   industry: z.string().optional(),
   complianceConfirmed: z.boolean().optional(),
   email: z.string().optional(),
@@ -134,12 +135,18 @@ export async function GET() {
       ORDER BY CASE r.state WHEN '已提交' THEN 1 WHEN '评审中' THEN 2 WHEN '待补证' THEN 3 ELSE 4 END, r.submitted_at DESC
     `);
 
+    // 已撤回的成果仅所有者可见
+    const assetWhere = session
+      ? sql`WHERE a.review_status != '已撤回' OR a.owner_member_id = ${session.memberId}`
+      : sql`WHERE a.review_status != '已撤回'`;
     const assetRows = await all<Record<string, unknown>>(sql`
-      SELECT a.id, a.title, a.type, a.industry, m.name AS "ownerName", a.owner_member_id AS "ownerMemberId",
+      SELECT a.id, a.title, COALESCE(a.description, '') AS "description", a.type, a.industry, m.name AS "ownerName", a.owner_member_id AS "ownerMemberId",
         a.source_evidence_id AS "sourceEvidenceId", a.review_status AS "reviewStatus",
         a.compliance_status AS "complianceStatus", a.reuse_people AS "reusePeople",
-        a.reuse_clients AS "reuseClients", to_char(a.updated_at, 'YYYY-MM-DD HH24:MI:SS') AS "updatedAt", a.url
+        a.reuse_clients AS "reuseClients", to_char(a.updated_at, 'YYYY-MM-DD HH24:MI:SS') AS "updatedAt", a.url,
+        COALESCE(a.review_feedback, '') AS "reviewFeedback"
       FROM assets a JOIN members m ON m.id = a.owner_member_id
+      ${assetWhere}
       ORDER BY CASE a.review_status WHEN '已发布' THEN 1 WHEN '待审核' THEN 2 ELSE 3 END, a.updated_at DESC
     `);
     const assets = assetRows.map(asset => session ? asset : { ...asset, ownerName: "团队成员" });
@@ -205,6 +212,7 @@ export async function POST(request: Request) {
       case "create_asset": await createAsset(session, payload); break;
       case "resubmit_asset": await resubmitAsset(session, payload); break;
       case "review_asset": await reviewAsset(session, payload); break;
+      case "withdraw_asset": await withdrawAsset(session, payload); break;
       case "create_user": await createUser(session, payload); break;
       case "update_user_access": await updateUserAccess(session, payload); break;
       case "save_framework_level": await saveFrameworkLevel(session, payload); break;
@@ -354,7 +362,7 @@ async function withdrawReview(session: SessionUser, payload: ActionPayload) {
   `);
   if (!review) throw new Error("评审不存在");
   if (review.memberId !== session.memberId) throw new Error("只能撤回自己的晋级申请");
-  if (!["已提交", "评审中", "待补证"].includes(review.state)) throw new Error("该申请已有结论，无法撤回");
+  if (!["已提交", "评审中", "待补证"].includes(review.state)) throw new Error("当前状态不可撤回");
   await run(sql`UPDATE reviews SET state = '已撤回', reviewed_at = now() WHERE id = ${review.id}`);
   await run(sql`UPDATE members SET review_status = '草稿', updated_at = now() WHERE id = ${review.memberId}`);
   await logAction(session.email, "撤回晋级申请", "review", review.id, `state=${review.state}`);
@@ -368,6 +376,13 @@ async function resubmitReview(session: SessionUser, payload: ActionPayload) {
   if (!review) throw new Error("评审不存在");
   if (review.memberId !== session.memberId) throw new Error("只能重新提交自己的晋级申请");
   if (review.state !== "待补证") throw new Error("只有待补证的申请可以重新提交");
+  // 补证空提交防护：重提前必须存在晚于提交/最近反馈时间的新证据
+  const fresh = await first<{ count: number }>(sql`
+    SELECT COUNT(*)::int AS count FROM evidences
+    WHERE member_id = ${review.memberId} AND level = ${review.targetLevel}
+      AND created_at > (SELECT COALESCE(reviewed_at, submitted_at) FROM reviews WHERE id = ${review.id})
+  `);
+  if (!fresh?.count) throw new Error("请先补充新证据后再重新提交");
   await run(sql`UPDATE reviews SET state = '已提交', submitted_at = now() WHERE id = ${review.id}`);
   await run(sql`UPDATE members SET review_status = '已提交', updated_at = now() WHERE id = ${review.memberId}`);
   await logAction(session.email, "补证后重新提交", "review", review.id, `target=L${review.targetLevel}`);
@@ -423,10 +438,12 @@ async function reviewDecision(session: SessionUser, payload: ActionPayload) {
 async function createAsset(session: SessionUser, payload: ActionPayload) {
   if (!payload.complianceConfirmed) throw new Error("提交成果前必须完成合规自查");
   if (!payload.title?.trim() || !payload.assetType?.trim() || !payload.industry?.trim()) throw new Error("请完整填写成果信息");
+  const description = String(payload.description || "").trim();
+  if (description.length > 500) throw new Error("成果描述最多 500 字");
   const memberId = await authorizedMemberId(session, payload.memberId);
   const inserted = await first<{ id: number }>(sql`
-    INSERT INTO assets (title, type, industry, owner_member_id, review_status, compliance_status, url)
-    VALUES (${clean(payload.title)}, ${clean(payload.assetType)}, ${clean(payload.industry)}, ${memberId}, '待审核', '已自查', ${clean(payload.url)})
+    INSERT INTO assets (title, description, type, industry, owner_member_id, review_status, compliance_status, url)
+    VALUES (${clean(payload.title)}, ${description}, ${clean(payload.assetType)}, ${clean(payload.industry)}, ${memberId}, '待审核', '已自查', ${clean(payload.url)})
     RETURNING id
   `);
   await logAction(session.email, "提交团队成果", "asset", Number(inserted?.id || 0), clean(payload.title));
@@ -439,15 +456,30 @@ async function resubmitAsset(session: SessionUser, payload: ActionPayload) {
   `);
   if (!asset) throw new Error("成果不存在");
   if (asset.ownerMemberId !== session.memberId && session.role !== "admin") throw new Error("没有修改该成果的权限");
-  if (asset.reviewStatus !== "待补充") throw new Error("只有退回待补充的成果可以重新提交");
+  if (!["待补充", "已撤回"].includes(asset.reviewStatus)) throw new Error("只有退回待补充或已撤回的成果可以重新提交");
   await run(sql`UPDATE assets SET review_status = '待审核', updated_at = now() WHERE id = ${asset.id}`);
-  await logAction(session.email, "重新提交团队成果", "asset", asset.id, "");
+  await logAction(session.email, "重新提交团队成果", "asset", asset.id, `from=${asset.reviewStatus}`);
+}
+
+async function withdrawAsset(session: SessionUser, payload: ActionPayload) {
+  if (!payload.assetId) throw new Error("缺少成果 ID");
+  const asset = await first<{ id: number; ownerMemberId: number; reviewStatus: string }>(sql`
+    SELECT id, owner_member_id AS "ownerMemberId", review_status AS "reviewStatus" FROM assets WHERE id = ${payload.assetId}
+  `);
+  if (!asset) throw new Error("成果不存在");
+  if (asset.ownerMemberId !== session.memberId && session.role !== "admin") throw new Error("没有撤回该成果的权限");
+  if (!["待审核", "审核中"].includes(asset.reviewStatus)) throw new Error("当前状态不可撤回");
+  await run(sql`UPDATE assets SET review_status = '已撤回', updated_at = now() WHERE id = ${asset.id}`);
+  await logAction(session.email, "撤回团队成果", "asset", asset.id, `from=${asset.reviewStatus}`);
 }
 
 async function reviewAsset(session: SessionUser, payload: ActionPayload) {
   requireAdmin(session);
   if (!payload.assetId || !["已发布", "待补充"].includes(payload.decision || "")) throw new Error("请选择成果审核结论");
-  await run(sql`UPDATE assets SET review_status = ${payload.decision}, updated_at = now() WHERE id = ${payload.assetId}`);
+  const feedback = clean(payload.feedback);
+  if (payload.decision === "待补充" && !feedback) throw new Error("退回成果时请填写退回原因");
+  // 发布时清空退回原因，保持与状态一致
+  await run(sql`UPDATE assets SET review_status = ${payload.decision}, review_feedback = ${payload.decision === "待补充" ? feedback : ""}, updated_at = now() WHERE id = ${payload.assetId}`);
   await logAction(session.email, "审核团队成果", "asset", payload.assetId, payload.decision);
 }
 
@@ -485,6 +517,7 @@ async function updateUserAccess(session: SessionUser, payload: ActionPayload) {
     SELECT member_id AS "memberId", role FROM workspace_users WHERE email = ${payload.email}
   `);
   if (!target) throw new Error("成员不存在");
+  if (payload.email.toLowerCase() === session.email.toLowerCase() && payload.role !== "admin") throw new Error("不能降低自己的管理员权限");
   if (target.role === "admin" && payload.role !== "admin") {
     const admins = await first<{ count: number }>(sql`SELECT COUNT(*)::int AS count FROM workspace_users WHERE role = 'admin'`);
     if ((admins?.count || 0) <= 1) throw new Error("至少保留 1 位管理员");
