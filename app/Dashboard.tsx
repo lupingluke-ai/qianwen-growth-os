@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type ClipboardEvent,
   type CSSProperties,
   type FormEvent,
   type ReactNode,
@@ -11,14 +12,17 @@ import {
   useState,
 } from "react";
 import { signOut } from "next-auth/react";
+import { createPortal } from "react-dom";
 import {
   ArrowRight,
   BadgeCheck,
   BookOpen,
   Check,
   CheckCircle,
+  ChevronDown,
   ChevronRight,
   CircleAlert,
+  CircleHelp,
   ClipboardCheck,
   Clock3,
   ExternalLink,
@@ -28,8 +32,10 @@ import {
   History,
   Library,
   LockKeyhole,
+  LogOut,
   Map,
   Menu,
+  MessageSquareWarning,
   PackageCheck,
   Paperclip,
   Plus,
@@ -42,6 +48,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { helpChapterLines, helpChaptersForRole, type HelpChapter, type HelpRole } from "./help-docs";
 import type {
   AssetRecord,
   Evidence,
@@ -78,6 +85,23 @@ type OnboardingDraft = {
   step: number; groupName: string; industry: string; targetLevel: number; targetDate: string; nextTask: string;
 };
 
+type FeedbackRecord = {
+  id: number; title: string; description: string; pageName: string; status: string;
+  adminResponse: string; createdByEmail: string; createdAt: string; resolvedAt: string; hasScreenshot: boolean;
+};
+
+type FeedbackStats = { total: number; open: number; inProgress: number; resolved: number };
+
+const FEEDBACK_STATUS_META: Record<string, { label: string; tone: string }> = {
+  open: { label: "待处理", tone: "tone-warning" },
+  in_progress: { label: "处理中", tone: "tone-info" },
+  resolved: { label: "已解决", tone: "tone-success" },
+  closed: { label: "已关闭", tone: "tone-neutral" },
+};
+const FEEDBACK_PAGE_OPTIONS = ["我的成长", "能力阶梯", "评审中心", "团队-成员概览", "团队-成果库", "团队-团队分析", "登录页", "管理设置", "其他"];
+const FEEDBACK_SCREENSHOT_MAX = 2_800_000; // 与后端 SCREENSHOT_MAX_LENGTH 一致（Base64 字符串长度）
+const FEEDBACK_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
+
 const SIGN_IN_URL = "/login";
 const CURRENT_CYCLE = new Date().toISOString().slice(0, 7);
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -86,6 +110,32 @@ async function handleSignOut() {
   if (!window.confirm("确定退出登录吗？")) return;
   await signOut({ redirect: false });
   window.location.href = "/";
+}
+
+async function postWorkspace<T>(payload: Record<string, unknown>): Promise<T> {
+  const response = await fetch("/api/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  const data = await response.json() as T & { error?: string };
+  if (!response.ok) throw new Error(data.error || "操作失败");
+  return data;
+}
+
+async function compressScreenshot(file: Blob): Promise<string> {
+  const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error("读取图片失败")); reader.readAsDataURL(file); });
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => { const img = new window.Image(); img.onload = () => resolve(img); img.onerror = () => reject(new Error("图片解析失败")); img.src = dataUrl; });
+  const scale = Math.min(1, 1600 / Math.max(image.width, image.height, 1));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("当前浏览器不支持图片压缩");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  let quality = 0.8;
+  let output = canvas.toDataURL("image/jpeg", quality);
+  while (output.length > 2 * 1024 * 1024 && quality > 0.35) { quality -= 0.1; output = canvas.toDataURL("image/jpeg", quality); }
+  if (output.length > FEEDBACK_SCREENSHOT_MAX) throw new Error("截图压缩后仍超过大小限制，请截取更小的区域");
+  return output;
 }
 
 function initials(name: string) { return name.trim().slice(-2) || "千"; }
@@ -184,6 +234,9 @@ export default function Dashboard({ levels: fallbackLevels, industryAnchors, sta
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
+  const accountMenuPopRef = useRef<HTMLDivElement>(null);
   const [focusedLevelNumber, setFocusedLevelNumber] = useState(4);
   const [levelGuide, setLevelGuide] = useState<LevelDefinition | null>(null);
   const [selectedMember, setSelectedMember] = useState<WorkspaceMember | null>(null);
@@ -193,7 +246,7 @@ export default function Dashboard({ levels: fallbackLevels, industryAnchors, sta
   const [evidenceDraft, setEvidenceDraft] = useState<EvidenceDraft | null>(null);
   const [assetDraft, setAssetDraft] = useState<AssetDraft | null>(null);
   const [onboardingDraft, setOnboardingDraft] = useState<OnboardingDraft | null>(null);
-  const onboardingShownRef = useRef(false);
+  const onboardingShownRef = useRef<number | null>(null);
   const [reviewSubmitOpen, setReviewSubmitOpen] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
@@ -209,9 +262,12 @@ export default function Dashboard({ levels: fallbackLevels, industryAnchors, sta
   const [assetQuery, setAssetQuery] = useState("");
   const [assetType, setAssetType] = useState("全部");
   const [adminOpen, setAdminOpen] = useState(false);
-  const [adminTab, setAdminTab] = useState<"framework" | "access">("framework");
+  const [adminTab, setAdminTab] = useState<"framework" | "access" | "feedback">("framework");
   const [frameworkLevelDraft, setFrameworkLevelDraft] = useState<LevelDefinition | null>(null);
   const [frameworkNote, setFrameworkNote] = useState("");
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackPage, setFeedbackPage] = useState("其他");
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const activeLevels = (workspace?.levels?.length ?? 0) >= 10 ? workspace!.levels : fallbackLevels;
   const focusedLevel = activeLevels.find(level => level.level === focusedLevelNumber) || activeLevels[0];
@@ -221,6 +277,12 @@ export default function Dashboard({ levels: fallbackLevels, industryAnchors, sta
     window.setTimeout(() => setToast(""), 3200);
   }
 
+  function skipOnboarding() {
+    const memberId = workspace?.myMember?.id;
+    if (memberId != null) { try { window.localStorage.setItem(`qw_onboarding_skip_${memberId}`, String(Date.now())); } catch { /* localStorage 不可用时静默降级 */ } }
+    setOnboardingDraft(null);
+  }
+
   const applyWorkspace = useCallback((data: WorkspacePayload) => {
     setWorkspace(data);
     if (data.myMember) {
@@ -228,9 +290,11 @@ export default function Dashboard({ levels: fallbackLevels, industryAnchors, sta
       setFocusedLevelNumber(nextLevel);
     }
     if (data.me?.role === "reviewer" || data.me?.role === "admin") setReviewScope("assigned");
-    if (data.myMember && data.myMember.industry === "未分配" && !onboardingShownRef.current) {
-      onboardingShownRef.current = true;
-      setOnboardingDraft({ step: 1, groupName: data.myMember.groupName || "综合组", industry: "通用", targetLevel: Math.max(data.myMember.targetLevel, data.myMember.currentLevel + 1), targetDate: data.myMember.targetDate, nextTask: data.myMember.nextTask || "" });
+    if (data.myMember && data.myMember.industry === "未分配" && onboardingShownRef.current !== data.myMember.id) {
+      onboardingShownRef.current = data.myMember.id;
+      let skipped = false;
+      try { skipped = !!window.localStorage.getItem(`qw_onboarding_skip_${data.myMember.id}`); } catch { skipped = false; }
+      if (!skipped) setOnboardingDraft({ step: 1, groupName: data.myMember.groupName || "综合组", industry: "通用", targetLevel: Math.max(data.myMember.targetLevel, data.myMember.currentLevel + 1), targetDate: data.myMember.targetDate, nextTask: data.myMember.nextTask || "" });
     }
   }, []);
 
@@ -254,6 +318,21 @@ export default function Dashboard({ levels: fallbackLevels, industryAnchors, sta
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [applyWorkspace]);
+
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    function onPointerDown(event: MouseEvent) {
+      const target = event.target as Node;
+      if (accountMenuRef.current?.contains(target) || accountMenuPopRef.current?.contains(target)) return;
+      setAccountMenuOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setAccountMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => { document.removeEventListener("mousedown", onPointerDown); document.removeEventListener("keydown", onKeyDown); };
+  }, [accountMenuOpen]);
 
   async function mutate(payload: Record<string, unknown>, success: string) {
     setBusy(true);
@@ -319,6 +398,19 @@ export default function Dashboard({ levels: fallbackLevels, industryAnchors, sta
     setAdminOpen(true);
   }
 
+  function openFeedback() {
+    setAccountMenuOpen(false);
+    if (!workspace?.authenticated) { window.location.href = SIGN_IN_URL; return; }
+    const teamPage = teamTab === "members" ? "团队-成员概览" : teamTab === "assets" ? "团队-成果库" : "团队-团队分析";
+    setFeedbackPage(activeView === "growth" ? "我的成长" : activeView === "capability" ? "能力阶梯" : activeView === "review" ? "评审中心" : teamPage);
+    setFeedbackOpen(true);
+  }
+
+  function openHelp() {
+    setAccountMenuOpen(false);
+    setHelpOpen(true);
+  }
+
   const myMember = workspace?.myMember;
   const myEvidence = useMemo(() => workspace?.evidences.filter(item => item.memberId === myMember?.id) || [], [myMember?.id, workspace?.evidences]);
   const selectedLevelEvidence = useMemo(() => myEvidence.filter(item => item.level === focusedLevel.level), [focusedLevel.level, myEvidence]);
@@ -331,6 +423,7 @@ export default function Dashboard({ levels: fallbackLevels, industryAnchors, sta
   const nextLevelEvidence = myEvidence.filter(item => item.level === nextLevelNumber);
   const latestFeedback = workspace?.reviews.find(review => review.memberId === myMember?.id && review.feedback)?.feedback || "提交后由主评人给出具体反馈";
   const canReview = workspace?.me?.role === "admin" || workspace?.me?.role === "reviewer";
+  const roleLabel = workspace?.me?.role === "admin" ? "管理员" : workspace?.me?.role === "reviewer" ? "成员 · 评审人" : "成员";
   const canDecideSelected = Boolean(selectedReview && (workspace?.me?.role === "admin" || selectedReview.reviewerEmail === workspace?.me?.email));
   const currentStage = stageForLevel(myMember?.currentLevel ?? workspace?.metrics.median ?? 0, stageMeta);
 
@@ -432,10 +525,25 @@ export default function Dashboard({ levels: fallbackLevels, industryAnchors, sta
         {navItems.map(({ id, label, icon: Icon }) => <button key={id} className={activeView === id ? "active" : ""} onClick={() => { setActiveView(id); setMobileNavOpen(false); }}><Icon size={20} /><span>{label}</span>{id === "review" && pendingReviewCount > 0 ? <span className="nav-badge">{pendingReviewCount}</span> : null}</button>)}
       </nav>
       <div className="account-area">
-        {workspace?.me?.role === "admin" ? <button className="icon-button settings-button" type="button" onClick={openAdmin} aria-label="管理设置"><Settings2 size={20} /></button> : null}
-        {workspace?.authenticated ? <>
-          <button className="account-chip" type="button" onClick={handleSignOut} title="退出登录"><span>{initials(workspace.me?.displayName || "千")}</span><span><b>{workspace.me?.displayName}</b><small>{workspace.me?.role === "admin" ? "管理员" : workspace.me?.role === "reviewer" ? "成员 · 评审人" : "成员"}</small></span></button>
-        </> : <a className="header-action" href={SIGN_IN_URL}>登录后更新</a>}
+        {workspace?.authenticated ? <div className="account-menu-anchor" ref={accountMenuRef}>
+          <button className={`account-chip${accountMenuOpen ? " is-open" : ""}`} type="button" onClick={() => setAccountMenuOpen(open => !open)} aria-haspopup="menu" aria-expanded={accountMenuOpen} aria-label="账号菜单">
+            <span>{initials(workspace.me?.displayName || "千")}</span>
+            <span><b>{workspace.me?.displayName}</b><small>{roleLabel}</small></span>
+            <ChevronDown className="account-chip-caret" size={15} />
+          </button>
+          {accountMenuOpen ? createPortal(<div ref={accountMenuPopRef} className="account-menu" role="menu" aria-label="账号菜单">
+            <div className="account-menu-profile">
+              <span className="member-avatar">{initials(workspace.me?.displayName || "千")}</span>
+              <span><b>{workspace.me?.displayName}</b>{workspace.me?.email ? <small>{workspace.me.email}</small> : null}<em className="account-menu-role">{roleLabel}</em></span>
+            </div>
+            <div className="account-menu-divider" />
+            <button className="account-menu-item" type="button" role="menuitem" onClick={openFeedback}><MessageSquareWarning size={16} /><span>问题反馈</span></button>
+            <button className="account-menu-item" type="button" role="menuitem" onClick={openHelp}><CircleHelp size={16} /><span>使用帮助</span></button>
+            {workspace.me?.role === "admin" ? <button className="account-menu-item" type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); openAdmin(); }}><Settings2 size={16} /><span>管理设置</span></button> : null}
+            <div className="account-menu-divider" />
+            <button className="account-menu-item danger" type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); handleSignOut(); }}><LogOut size={16} /><span>退出登录</span></button>
+          </div>, document.body) : null}
+        </div> : <a className="header-action" href={SIGN_IN_URL}>登录后更新</a>}
       </div>
     </header>
 
@@ -549,11 +657,12 @@ export default function Dashboard({ levels: fallbackLevels, industryAnchors, sta
     {onboardingDraft ? <DialogFrame title="欢迎加入千问计划" onClose={() => setOnboardingDraft(null)} size="wide"><div className="dialog-form">
       <div className="dialog-heading"><span>WELCOME · STEP {onboardingDraft.step}/2</span><h2>{onboardingDraft.step === 1 ? "先告诉我们你在哪里" : "写下你的下一步行动"}</h2></div>
       <div className="onboarding-steps" aria-hidden="true">{[1, 2].map(step => <span key={step} className={onboardingDraft.step >= step ? "active" : ""} />)}</div>
-      {onboardingDraft.step === 1 ? <div className="form-grid"><label>所属小组<input value={onboardingDraft.groupName} onChange={event => setOnboardingDraft({ ...onboardingDraft, groupName: event.target.value })} placeholder="例如：能源组" /></label><label>主要行业<select value={onboardingDraft.industry} onChange={event => setOnboardingDraft({ ...onboardingDraft, industry: event.target.value })}>{["高校", "新质", "能源", "政务", "通用"].map(item => <option key={item}>{item}</option>)}</select></label></div> : null}
+      {onboardingDraft.step === 1 ? <div className="form-grid"><label><FieldLabel text="所属小组" required /><input value={onboardingDraft.groupName} onChange={event => { setOnboardingDraft({ ...onboardingDraft, groupName: event.target.value }); setFormErrors(prev => { const { onboardingGroupName, ...rest } = prev; return rest; }); }} onBlur={event => { if (!event.target.value.trim()) setFormErrors(prev => ({ ...prev, onboardingGroupName: "此字段为必填" })); }} placeholder="例如：能源组" aria-invalid={!!formErrors.onboardingGroupName} aria-describedby={formErrors.onboardingGroupName ? "onboarding-group-name-error" : undefined} />{formErrors.onboardingGroupName ? <span id="onboarding-group-name-error" className="field-error">{formErrors.onboardingGroupName}</span> : null}</label><label>主要行业<select value={onboardingDraft.industry} onChange={event => setOnboardingDraft({ ...onboardingDraft, industry: event.target.value })}>{["高校", "新质", "能源", "政务", "通用"].map(item => <option key={item}>{item}</option>)}</select></label></div> : null}
       {onboardingDraft.step === 2 ? <><label><FieldLabel text="下一步行动" required /><input value={onboardingDraft.nextTask} onChange={event => { setOnboardingDraft({ ...onboardingDraft, nextTask: event.target.value }); setFormErrors(prev => { const { onboardingNextTask, ...rest } = prev; return rest; }); }} onBlur={event => { if (!event.target.value.trim()) setFormErrors(prev => ({ ...prev, onboardingNextTask: "此字段为必填" })); }} placeholder="例如：用 AI 完成一次客户拜访前的情报汇总" aria-invalid={!!formErrors.onboardingNextTask} aria-describedby={formErrors.onboardingNextTask ? "onboarding-next-task-error" : undefined} />{formErrors.onboardingNextTask ? <span id="onboarding-next-task-error" className="field-error">{formErrors.onboardingNextTask}</span> : null}</label><label><FieldLabel text="下一级计划完成日期" required /><input type="date" min={TODAY} value={onboardingDraft.targetDate} aria-invalid={!!formErrors.onboardingDate} aria-describedby={formErrors.onboardingDate ? "onboarding-date-error" : undefined} onChange={event => { setOnboardingDraft({ ...onboardingDraft, targetDate: event.target.value }); setFormErrors(prev => { const { onboardingDate, ...rest } = prev; return rest; }); }} />{formErrors.onboardingDate ? <span id="onboarding-date-error" className="field-error">{formErrors.onboardingDate}</span> : null}</label></> : null}
       <div className="form-actions">
-        {onboardingDraft.step > 1 ? <button type="button" className="secondary-action" onClick={() => setOnboardingDraft({ ...onboardingDraft, step: onboardingDraft.step - 1 })}>上一步</button> : <button type="button" className="secondary-action" onClick={() => setOnboardingDraft(null)}>稍后完成</button>}
-        {onboardingDraft.step < 2 ? <button type="button" className="primary-action" onClick={() => setOnboardingDraft({ ...onboardingDraft, step: onboardingDraft.step + 1 })}>下一步 <ArrowRight size={16} /></button> : <button type="button" className="primary-action" disabled={busy || !onboardingDraft.nextTask.trim()} onClick={async () => { if (onboardingDraft.targetDate && onboardingDraft.targetDate < TODAY) { setFormErrors(prev => ({ ...prev, onboardingDate: "完成日期不能早于今天" })); return; } const ok = await mutate({ action: "complete_onboarding", groupName: onboardingDraft.groupName, industry: onboardingDraft.industry, targetDate: onboardingDraft.targetDate, nextTask: onboardingDraft.nextTask }, "欢迎加入千问计划，成长档案已建立"); if (ok) { setOnboardingDraft(null); openEvidence(workspace?.myMember, nextLevelNumber); } }}>{busy ? "保存中…" : "完成引导"}</button>}
+        <button type="button" className="text-link" onClick={skipOnboarding}>稍后完成</button>
+        {onboardingDraft.step > 1 ? <button type="button" className="secondary-action" onClick={() => setOnboardingDraft({ ...onboardingDraft, step: onboardingDraft.step - 1 })}>上一步</button> : null}
+        {onboardingDraft.step < 2 ? <button type="button" className="primary-action" disabled={!onboardingDraft.groupName.trim()} onClick={() => setOnboardingDraft({ ...onboardingDraft, step: onboardingDraft.step + 1 })}>下一步 <ArrowRight size={16} /></button> : <button type="button" className="primary-action" disabled={busy || !onboardingDraft.nextTask.trim()} onClick={async () => { if (onboardingDraft.targetDate && onboardingDraft.targetDate < TODAY) { setFormErrors(prev => ({ ...prev, onboardingDate: "完成日期不能早于今天" })); return; } const ok = await mutate({ action: "complete_onboarding", groupName: onboardingDraft.groupName, industry: onboardingDraft.industry, targetDate: onboardingDraft.targetDate, nextTask: onboardingDraft.nextTask }, "欢迎加入千问计划，成长档案已建立"); if (ok) { const memberId = workspace?.myMember?.id; if (memberId != null) { try { window.localStorage.removeItem(`qw_onboarding_skip_${memberId}`); } catch { /* 忽略 */ } } setOnboardingDraft(null); openEvidence(workspace?.myMember, nextLevelNumber); } }}>{busy ? "保存中…" : "完成引导"}</button>}
       </div>
     </div></DialogFrame> : null}
 
@@ -593,14 +702,289 @@ export default function Dashboard({ levels: fallbackLevels, industryAnchors, sta
 
     {assetDraft ? <DialogFrame title="提交团队成果" onClose={() => setAssetDraft(null)} size="wide"><form className="dialog-form" onSubmit={async (event: FormEvent) => { event.preventDefault(); const ok = await mutate({ action: "create_asset", ...assetDraft }, "成果已提交审核"); if (ok) setAssetDraft(null); }}><div className="dialog-heading"><span>TEAM RESULT</span><h2>提交团队成果</h2></div><div className="form-grid"><label><FieldLabel text="成果类型" required /><select value={assetDraft.assetType} onChange={event => setAssetDraft({ ...assetDraft, assetType: event.target.value })}>{["Skill", "知识库", "评测集", "原型", "行业实践"].map(item => <option key={item}>{item}</option>)}</select></label><label><FieldLabel text="所属行业" required /><select value={assetDraft.industry} onChange={event => setAssetDraft({ ...assetDraft, industry: event.target.value })}>{["高校", "新质", "能源", "政务", "通用"].map(item => <option key={item}>{item}</option>)}</select></label></div><label><FieldLabel text="成果名称" required /><input required value={assetDraft.title} onChange={event => setAssetDraft({ ...assetDraft, title: event.target.value })} onBlur={e => { if (!e.target.value.trim()) { setFormErrors(prev => ({ ...prev, assetTitle: '此字段为必填' })); } else { setFormErrors(prev => { const { assetTitle, ...rest } = prev; return rest; }); } }} placeholder="使用业务价值清晰的名称" aria-describedby={formErrors.assetTitle ? "asset-title-error" : undefined} aria-invalid={!!formErrors.assetTitle} />{formErrors.assetTitle && <span id="asset-title-error" className="field-error">{formErrors.assetTitle}</span>}</label><label><FieldLabel text="成果描述（可选）" /><textarea rows={3} maxLength={500} value={assetDraft.description} onChange={event => setAssetDraft({ ...assetDraft, description: event.target.value })} placeholder="写清业务价值与适用场景：解决什么问题、适合哪些行业与任务复用" /></label><label><FieldLabel text="仓库或材料链接" /><input type="url" value={assetDraft.url} onChange={event => setAssetDraft({ ...assetDraft, url: event.target.value })} placeholder="https://…（可选）" /></label><label className="compliance-check"><input type="checkbox" checked={assetDraft.complianceConfirmed} onChange={event => setAssetDraft({ ...assetDraft, complianceConfirmed: event.target.checked })} /><span><b>我已完成合规自查</b><small>客户与人名已匿名化、真实数据已替换、密钥与内网地址已剥离。</small></span></label><div className="form-actions"><button type="button" className="secondary-action" onClick={() => setAssetDraft(null)}>取消</button><button className="primary-action" disabled={busy || !assetDraft.title.trim() || !assetDraft.complianceConfirmed}>{busy ? "提交中…" : "提交审核"}</button></div></form></DialogFrame> : null}
 
-    {adminOpen && workspace?.me?.role === "admin" ? <DialogFrame title="管理设置" onClose={() => setAdminOpen(false)} size="drawer"><div className="admin-settings"><div className="admin-heading"><span>ADMIN SETTINGS</span><h2>管理设置</h2></div><div className="admin-tabs"><button className={adminTab === "framework" ? "active" : ""} onClick={() => setAdminTab("framework")}>十级体系</button><button className={adminTab === "access" ? "active" : ""} onClick={() => setAdminTab("access")}>成员与评审人</button></div>{adminTab === "framework" ? <div className="framework-admin"><div className="framework-status"><span><small>线上版本</small><b>{workspace.framework.published.versionName} · 已发布</b></span><span><small>编辑版本</small><b>{workspace.framework.draft?.versionName || "保存后自动创建草稿"}</b></span></div><div className="level-admin-picker">{(workspace.framework.draft?.levels || workspace.framework.published.levels).map(level => <button key={level.level} className={frameworkLevelDraft?.level === level.level ? "active" : ""} onClick={() => setFrameworkLevelDraft(structuredClone(level))}>L{level.level}<span>{level.title}</span></button>)}</div>{frameworkLevelDraft ? <form className="admin-level-form" onSubmit={async event => { event.preventDefault(); const criteria = frameworkLevelDraft.criteria.map(item => ({ ...item, label: item.label.trim(), evidenceHint: item.evidenceHint.trim() || "提交可核验材料" })).filter(item => item.label); const sanitized = { ...frameworkLevelDraft, criteria }; const ok = await mutate({ action: "save_framework_level", frameworkLevel: sanitized, changeNote: frameworkNote }, `L${frameworkLevelDraft.level} 草稿已保存`); if (ok) setFrameworkLevelDraft(sanitized); }}><div className="form-grid"><label><FieldLabel text="层级名称" required /><input value={frameworkLevelDraft.title} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, title: event.target.value })} /></label><label>能力角色<input value={frameworkLevelDraft.role} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, role: event.target.value })} /></label></div><label>所属阶段<select value={frameworkLevelDraft.stage} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, stage: event.target.value })}>{stageMeta.map(stage => <option key={stage.label}>{stage.label}</option>)}</select></label><label>能力定义<textarea rows={4} value={frameworkLevelDraft.definition} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, definition: event.target.value })} /></label><label><FieldLabel text="认证标准" required /><textarea rows={3} value={frameworkLevelDraft.standard} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, standard: event.target.value })} /></label><label>核心能力（用顿号分隔）<textarea rows={3} value={frameworkLevelDraft.abilities.join("、")} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, abilities: event.target.value.split(/[、，,\n]/).map(item => item.trim()).filter(Boolean) })} /></label><div className="criteria-editor"><div className="form-section-label"><FieldLabel text="通关标准" required /><small>每条包含标准与证据提示，保存时自动序列化</small></div>{frameworkLevelDraft.criteria.map((criterion, index) => <div className="criteria-editor-row" key={criterion.id}><input value={criterion.label} placeholder="标准" aria-label={`第 ${index + 1} 条标准`} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, criteria: frameworkLevelDraft.criteria.map((item, i) => i === index ? { ...item, label: event.target.value } : item) })} /><input value={criterion.evidenceHint} placeholder="证据提示" aria-label={`第 ${index + 1} 条证据提示`} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, criteria: frameworkLevelDraft.criteria.map((item, i) => i === index ? { ...item, evidenceHint: event.target.value } : item) })} /><button type="button" className="icon-button criteria-remove" aria-label={`删除第 ${index + 1} 条标准`} onClick={() => setFrameworkLevelDraft({ ...frameworkLevelDraft, criteria: frameworkLevelDraft.criteria.filter((_, i) => i !== index) })}><X size={16} /></button></div>)}<button type="button" className="secondary-action criteria-add" onClick={() => setFrameworkLevelDraft({ ...frameworkLevelDraft, criteria: [...frameworkLevelDraft.criteria, { id: nextCriterionId(frameworkLevelDraft), label: "", evidenceHint: "" }] })}><Plus size={16} /> 添加标准</button></div><label>版本说明<input value={frameworkNote} onChange={event => setFrameworkNote(event.target.value)} placeholder="说明本次为什么调整" /></label><div className="form-actions sticky-actions"><button className="secondary-action" type="button" disabled={busy || !workspace.framework.draft} onClick={async () => { const ok = await mutate({ action: "publish_framework", changeNote: frameworkNote }, "新版十级体系已发布"); if (ok) setAdminOpen(false); }}>发布新版</button><button className="primary-action" disabled={busy}>{busy ? "保存中…" : "保存草稿"}</button></div></form> : null}</div> : <div className="access-admin"><div className="role-stats">Admin({workspace.workspaceUsers.filter(u => u.role === 'admin').length}) | Reviewer({workspace.workspaceUsers.filter(u => u.role === 'reviewer').length}) | Member({workspace.workspaceUsers.filter(u => u.role === 'member' || !u.role).length})</div><div className="admin-note"><ShieldCheck size={20} /><p>评审人也是普通成员，只多一个“处理分配给自己的评审”权限；管理员建议保留 1–2 位。</p></div><NewUserForm busy={busy} onCreate={fields => mutate({ action: "create_user", ...fields }, `${fields.displayName} 的账号已创建`)} />{workspace.workspaceUsers.map(user => <ManagedUserRow key={`${user.email}:${user.role}:${user.groupName}`} user={user} busy={busy} isSelf={user.email === workspace.me?.email} onSave={(role, groupName) => mutate({ action: "update_user_access", email: user.email, role, groupName }, `${user.displayName} 的权限已更新`)} />)}</div>}</div></DialogFrame> : null}
+    {adminOpen && workspace?.me?.role === "admin" ? <DialogFrame title="管理设置" onClose={() => setAdminOpen(false)} size="drawer"><div className="admin-settings"><div className="admin-heading"><span>ADMIN SETTINGS</span><h2>管理设置</h2></div><div className="admin-tabs"><button className={adminTab === "framework" ? "active" : ""} onClick={() => setAdminTab("framework")}>十级体系</button><button className={adminTab === "access" ? "active" : ""} onClick={() => setAdminTab("access")}>成员与评审人</button><button className={adminTab === "feedback" ? "active" : ""} onClick={() => setAdminTab("feedback")}>问题反馈</button></div>{adminTab === "framework" ? <div className="framework-admin"><div className="framework-status"><span><small>线上版本</small><b>{workspace.framework.published.versionName} · 已发布</b></span><span><small>编辑版本</small><b>{workspace.framework.draft?.versionName || "保存后自动创建草稿"}</b></span></div><div className="level-admin-picker">{(workspace.framework.draft?.levels || workspace.framework.published.levels).map(level => <button key={level.level} className={frameworkLevelDraft?.level === level.level ? "active" : ""} onClick={() => setFrameworkLevelDraft(structuredClone(level))}>L{level.level}<span>{level.title}</span></button>)}</div>{frameworkLevelDraft ? <form className="admin-level-form" onSubmit={async event => { event.preventDefault(); const criteria = frameworkLevelDraft.criteria.map(item => ({ ...item, label: item.label.trim(), evidenceHint: item.evidenceHint.trim() || "提交可核验材料" })).filter(item => item.label); const sanitized = { ...frameworkLevelDraft, criteria }; const ok = await mutate({ action: "save_framework_level", frameworkLevel: sanitized, changeNote: frameworkNote }, `L${frameworkLevelDraft.level} 草稿已保存`); if (ok) setFrameworkLevelDraft(sanitized); }}><div className="form-grid"><label><FieldLabel text="层级名称" required /><input value={frameworkLevelDraft.title} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, title: event.target.value })} /></label><label>能力角色<input value={frameworkLevelDraft.role} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, role: event.target.value })} /></label></div><label>所属阶段<select value={frameworkLevelDraft.stage} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, stage: event.target.value })}>{stageMeta.map(stage => <option key={stage.label}>{stage.label}</option>)}</select></label><label>能力定义<textarea rows={4} value={frameworkLevelDraft.definition} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, definition: event.target.value })} /></label><label><FieldLabel text="认证标准" required /><textarea rows={3} value={frameworkLevelDraft.standard} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, standard: event.target.value })} /></label><label>核心能力（用顿号分隔）<textarea rows={3} value={frameworkLevelDraft.abilities.join("、")} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, abilities: event.target.value.split(/[、，,\n]/).map(item => item.trim()).filter(Boolean) })} /></label><div className="criteria-editor"><div className="form-section-label"><FieldLabel text="通关标准" required /><small>每条包含标准与证据提示，保存时自动序列化</small></div>{frameworkLevelDraft.criteria.map((criterion, index) => <div className="criteria-editor-row" key={criterion.id}><input value={criterion.label} placeholder="标准" aria-label={`第 ${index + 1} 条标准`} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, criteria: frameworkLevelDraft.criteria.map((item, i) => i === index ? { ...item, label: event.target.value } : item) })} /><input value={criterion.evidenceHint} placeholder="证据提示" aria-label={`第 ${index + 1} 条证据提示`} onChange={event => setFrameworkLevelDraft({ ...frameworkLevelDraft, criteria: frameworkLevelDraft.criteria.map((item, i) => i === index ? { ...item, evidenceHint: event.target.value } : item) })} /><button type="button" className="icon-button criteria-remove" aria-label={`删除第 ${index + 1} 条标准`} onClick={() => setFrameworkLevelDraft({ ...frameworkLevelDraft, criteria: frameworkLevelDraft.criteria.filter((_, i) => i !== index) })}><X size={16} /></button></div>)}<button type="button" className="secondary-action criteria-add" onClick={() => setFrameworkLevelDraft({ ...frameworkLevelDraft, criteria: [...frameworkLevelDraft.criteria, { id: nextCriterionId(frameworkLevelDraft), label: "", evidenceHint: "" }] })}><Plus size={16} /> 添加标准</button></div><label>版本说明<input value={frameworkNote} onChange={event => setFrameworkNote(event.target.value)} placeholder="说明本次为什么调整" /></label><div className="form-actions sticky-actions"><button className="secondary-action" type="button" disabled={busy || !workspace.framework.draft} onClick={async () => { const ok = await mutate({ action: "publish_framework", changeNote: frameworkNote }, "新版十级体系已发布"); if (ok) setAdminOpen(false); }}>发布新版</button><button className="primary-action" disabled={busy}>{busy ? "保存中…" : "保存草稿"}</button></div></form> : null}</div> : adminTab === "access" ? <div className="access-admin"><div className="role-stats">Admin({workspace.workspaceUsers.filter(u => u.role === 'admin').length}) | Reviewer({workspace.workspaceUsers.filter(u => u.role === 'reviewer').length}) | Member({workspace.workspaceUsers.filter(u => u.role === 'member' || !u.role).length})</div><div className="admin-note"><ShieldCheck size={20} /><p>评审人也是普通成员，只多一个“处理分配给自己的评审”权限；管理员建议保留 1–2 位。</p></div><NewUserForm busy={busy} onCreate={fields => mutate({ action: "create_user", ...fields }, `${fields.displayName} 的账号已创建`)} />{workspace.workspaceUsers.map(user => <ManagedUserRow key={`${user.email}:${user.role}:${user.groupName}`} user={user} busy={busy} isSelf={user.email === workspace.me?.email} onSave={(role, groupName) => mutate({ action: "update_user_access", email: user.email, role, groupName }, `${user.displayName} 的权限已更新`)} />)}</div> : <AdminFeedbackPanel showToast={showToast} />}</div></DialogFrame> : null}
 
     {levelGuide ? <DialogFrame title={`L${levelGuide.level} ${levelGuide.title}完整指南`} onClose={() => setLevelGuide(null)} size="drawer"><div className="level-guide"><div className="guide-hero" style={{ "--stage": stageForLevel(levelGuide.level, stageMeta).color } as CSSProperties}><span>{levelGuide.stage}</span><strong>L{levelGuide.level}</strong><h2>{levelGuide.title}</h2><p>{levelGuide.role}</p></div><section><p className="guide-definition">{levelGuide.definition}</p><div className="standard-callout"><small>认证标准</small><b>{levelGuide.standard}</b></div></section><section><h3>通关标准与证据示例</h3>{levelGuide.criteria.map((criterion, index) => <div className="guide-criterion" key={criterion.id}><span>{index + 1}</span><div><b>{criterion.label}</b><small>{criterion.evidenceHint}</small></div></div>)}</section><section><h3>业务实践</h3><ul>{levelGuide.practices.map(item => <li key={item}><Check size={16} />{item}</li>)}</ul></section><section><h3>自我提升路径</h3><p>{levelGuide.path}</p></section>{levelGuide.resources.length ? <section><h3>学习资源</h3>{levelGuide.resources.map(resource => <a className="resource-link" key={resource.label} href={resource.url} target="_blank" rel="noreferrer"><ExternalLink size={16} />{resource.label}<ChevronRight size={16} /></a>)}</section> : null}</div></DialogFrame> : null}
 
     {selectedAnchor ? <DialogFrame title={`${selectedAnchor.name}行业实战锚点`} onClose={() => setSelectedAnchor(null)} size="drawer"><div className="anchor-detail"><div className="anchor-hero"><span>{selectedAnchor.version}</span><h2>{selectedAnchor.name}</h2><p>{selectedAnchor.owner} · 每季度更新</p></div><p className="anchor-intro">每一个锚点任务都关联真实项目，优秀证据经审核后进入团队成果库。</p>{selectedAnchor.items.map((item, index) => <div className="anchor-task" key={item.title}><span>{String(index + 1).padStart(2, "0")}</span><div><b>L{item.level} · {item.title}</b><small>{item.template}</small></div><button onClick={() => { setSelectedAnchor(null); setFocusedLevelNumber(item.level); setActiveView("capability"); }} aria-label={`查看 L${item.level} 标准`}><ChevronRight size={16} /></button></div>)}<div className="compliance-rule"><FolderKanban size={20} /><div><b>成果关系</b><p>证据证明个人达标；审核发布后的成果沉淀组织复用，并反馈 L6+ 的能力认证。</p></div></div></div></DialogFrame> : null}
 
+    {feedbackOpen && workspace?.authenticated ? <FeedbackDialog defaultPage={feedbackPage} isAdmin={workspace.me?.role === "admin"} onClose={() => setFeedbackOpen(false)} showToast={showToast} /> : null}
+
+    {helpOpen ? <HelpCenterDialog role={workspace?.me?.role === "admin" ? "admin" : workspace?.me?.role === "reviewer" ? "reviewer" : "member"} onClose={() => setHelpOpen(false)} onFeedback={() => { setHelpOpen(false); openFeedback(); }} /> : null}
+
     {toast ? <div className="toast" role="status">{toast}</div> : null}
   </main>;
+}
+
+function FeedbackDialog({ defaultPage, isAdmin, onClose, showToast }: { defaultPage: string; isAdmin: boolean; onClose: () => void; showToast: (message: string) => void }) {
+  const [tab, setTab] = useState<"submit" | "mine">("submit");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [pageName, setPageName] = useState(defaultPage);
+  const [screenshot, setScreenshot] = useState("");
+  const [shotError, setShotError] = useState<string | null>(null);
+  const [processingShot, setProcessingShot] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
+  const [mine, setMine] = useState<FeedbackRecord[] | null>(null);
+  const [mineError, setMineError] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [shots, setShots] = useState<Record<number, string>>({});
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pageOptions = FEEDBACK_PAGE_OPTIONS.filter(page => page !== "管理设置" || isAdmin);
+
+  useEffect(() => {
+    if (tab !== "mine") return;
+    let cancelled = false;
+    postWorkspace<{ feedbacks: FeedbackRecord[] }>({ action: "list_feedbacks", scope: "mine" })
+      .then(data => { if (!cancelled) { setMine(data.feedbacks); setMineError(null); } })
+      .catch(error => { if (!cancelled) setMineError(error instanceof Error ? error.message : "读取反馈失败"); });
+    return () => { cancelled = true; };
+  }, [tab]);
+
+  async function acceptImage(file: File | null) {
+    if (!file) return;
+    if (!FEEDBACK_IMAGE_TYPES.includes(file.type)) { setShotError("仅支持 PNG / JPG / WebP 图片"); return; }
+    setShotError(null);
+    setProcessingShot(true);
+    try { setScreenshot(await compressScreenshot(file)); }
+    catch (error) { setShotError(error instanceof Error ? error.message : "图片处理失败"); }
+    finally { setProcessingShot(false); }
+  }
+
+  function onPaste(event: ClipboardEvent<HTMLDivElement>) {
+    if (tab !== "submit" || submitted) return;
+    const item = Array.from(event.clipboardData.items).find(entry => entry.type.startsWith("image/"));
+    if (!item) return;
+    event.preventDefault();
+    acceptImage(item.getAsFile());
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!title.trim() || !description.trim()) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await postWorkspace({ action: "submit_feedback", title: title.trim(), description: description.trim(), pageName, screenshot });
+      setSubmitted(true);
+      setMine(null);
+      showToast("反馈已提交，感谢你的建议");
+    } catch (error) { setSubmitError(error instanceof Error ? error.message : "提交失败，请重试"); }
+    finally { setSubmitting(false); }
+  }
+
+  function resetForm() {
+    setTitle(""); setDescription(""); setScreenshot(""); setShotError(null); setSubmitError(null); setSubmitted(false);
+  }
+
+  async function toggleDetail(item: FeedbackRecord) {
+    const next = expandedId === item.id ? null : item.id;
+    setExpandedId(next);
+    if (next && item.hasScreenshot && !shots[item.id]) {
+      try {
+        const data = await postWorkspace<{ feedback: { screenshot: string } }>({ action: "get_feedback", feedbackId: item.id });
+        setShots(prev => ({ ...prev, [item.id]: data.feedback.screenshot }));
+      } catch { /* 截图加载失败不阻断详情展示 */ }
+    }
+  }
+
+  return <DialogFrame title="问题反馈" onClose={onClose} size="wide"><div className="dialog-form" onPaste={onPaste}>
+    <div className="dialog-heading"><span>FEEDBACK</span><h2>问题反馈</h2></div>
+    <div className="feedback-tabs" role="tablist"><button className={tab === "submit" ? "active" : ""} onClick={() => setTab("submit")}>提交反馈</button><button className={tab === "mine" ? "active" : ""} onClick={() => setTab("mine")}>我的反馈</button></div>
+    {tab === "submit" ? (submitted ? <div className="submit-success">
+      <CheckCircle size={48} className="success-icon" />
+      <h3>已收到反馈</h3>
+      <p>管理员会尽快处理，可在「我的反馈」中查看进展</p>
+      <div className="form-actions"><button type="button" className="secondary-action" onClick={resetForm}>再提交一条</button><button type="button" className="primary-action" onClick={onClose}>关闭</button></div>
+    </div> : <form className="feedback-form" onSubmit={submit}>
+      <label><FieldLabel text="问题标题" required /><input maxLength={100} value={title} onChange={event => setTitle(event.target.value)} placeholder="一句话描述遇到的问题或建议" /><span className="char-counter">{title.length}/100</span></label>
+      <label><FieldLabel text="问题描述" required /><textarea rows={5} maxLength={2000} value={description} onChange={event => setDescription(event.target.value)} placeholder={"背景：在什么场景下遇到的\n预期行为：你期望发生什么\n实际行为：实际发生了什么"} /><span className="char-counter">{description.length}/2000</span></label>
+      <label><FieldLabel text="所属页面" required /><select value={pageName} onChange={event => setPageName(event.target.value)}>{pageOptions.map(page => <option key={page}>{page}</option>)}</select></label>
+      <div className="feedback-upload-block">
+        <FieldLabel text="截图（可选）" />
+        {screenshot ? <div className="feedback-shot-preview">
+          {/* eslint-disable-next-line @next/next/no-img-element -- Base64 预览图，next/image 不适用 */}
+          <img src={screenshot} alt="截图预览" />
+          <button type="button" className="icon-button" aria-label="移除截图" onClick={() => setScreenshot("")}><X size={16} /></button>
+        </div> : <button type="button" className="feedback-upload" disabled={processingShot} onClick={() => fileInputRef.current?.click()}><Paperclip size={16} /><b>{processingShot ? "图片压缩中…" : "点击上传，或直接在弹窗内粘贴截图"}</b><small>支持 PNG / JPG / WebP，自动压缩后随反馈提交</small></button>}
+        <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={event => { acceptImage(event.target.files?.[0] || null); event.target.value = ""; }} />
+        {shotError ? <span className="field-error">{shotError}</span> : null}
+      </div>
+      {submitError ? <span className="field-error">{submitError}</span> : null}
+      <div className="form-actions"><button type="button" className="secondary-action" onClick={onClose}>取消</button><button className="primary-action" disabled={submitting || processingShot || !title.trim() || !description.trim()}>{submitting ? "提交中…" : "提交反馈"}</button></div>
+    </form>) : <div className="feedback-list">
+      {mineError ? <div className="field-error">{mineError}</div> : null}
+      {mine === null && !mineError ? <p className="dialog-hint">正在加载我的反馈…</p> : null}
+      {mine?.length === 0 ? <EmptyState icon={<MessageSquareWarning size={20} />} title="还没有提交过反馈" copy="遇到问题或有建议时，欢迎在「提交反馈」中告诉我们。" /> : null}
+      {mine?.map(item => <div className="feedback-item" key={item.id}>
+        <button type="button" className="feedback-item-head" aria-expanded={expandedId === item.id} onClick={() => toggleDetail(item)}>
+          <span className="feedback-item-title"><b>{item.title}</b>{item.adminResponse ? <em className="feedback-reply-badge">有回复</em> : null}</span>
+          <span className="feedback-item-meta"><em className={`state-label ${FEEDBACK_STATUS_META[item.status]?.tone || "tone-neutral"}`} aria-label={`处理状态：${FEEDBACK_STATUS_META[item.status]?.label || item.status}`}>{FEEDBACK_STATUS_META[item.status]?.label || item.status}</em><small>{item.pageName} · {formatDate(item.createdAt)}</small></span>
+          <ChevronDown size={16} className={expandedId === item.id ? "is-open" : ""} />
+        </button>
+        {expandedId === item.id ? <div className="feedback-detail">
+          <p className="feedback-desc">{item.description}</p>
+          {item.hasScreenshot ? <div className="feedback-screenshot">{shots[item.id] ? <>
+            {/* eslint-disable-next-line @next/next/no-img-element -- Base64 截图，next/image 不适用 */}
+            <img src={shots[item.id]} alt={`${item.title} 截图`} />
+          </> : <small>截图加载中…</small>}</div> : null}
+          {item.adminResponse ? <div className="feedback-box"><UserRoundCheck size={20} /><div><small>管理员回复{item.resolvedAt ? ` · ${formatDate(item.resolvedAt)}` : ""}</small><p>{item.adminResponse}</p></div></div> : null}
+        </div> : null}
+      </div>)}
+    </div>}
+  </div></DialogFrame>;
+}
+
+function HelpCenterDialog({ role, onClose, onFeedback }: { role: HelpRole; onClose: () => void; onFeedback: () => void }) {
+  const chapters = useMemo(() => helpChaptersForRole(role), [role]);
+  const [activeId, setActiveId] = useState(chapters[0]?.id || "");
+  const [query, setQuery] = useState("");
+  const groupedChapters = useMemo(() => {
+    const groups: { category: string; items: HelpChapter[] }[] = [];
+    for (const chapter of chapters) {
+      const group = groups.find(item => item.category === chapter.category);
+      if (group) group.items.push(chapter);
+      else groups.push({ category: chapter.category, items: [chapter] });
+    }
+    return groups;
+  }, [chapters]);
+  const keyword = query.trim().toLowerCase();
+  const searchResults = useMemo(() => {
+    if (!keyword) return [];
+    return chapters.flatMap(chapter => {
+      const hitLine = helpChapterLines(chapter).find(line => line.toLowerCase().includes(keyword));
+      if (!hitLine) return [];
+      const at = Math.max(0, hitLine.toLowerCase().indexOf(keyword) - 14);
+      return [{ chapter, snippet: `${at > 0 ? "…" : ""}${hitLine.slice(at, at + 64)}${at + 64 < hitLine.length ? "…" : ""}` }];
+    });
+  }, [chapters, keyword]);
+  const activeChapter = chapters.find(chapter => chapter.id === activeId) || chapters[0];
+  if (!activeChapter) return null;
+
+  return <DialogFrame title="使用帮助" onClose={onClose} size="drawer"><div className="help-center">
+    <div className="dialog-heading"><span>HELP CENTER</span><h2>使用帮助</h2></div>
+    <label className="search-field help-search"><Search size={20} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索使用文档，如：晋级、证据、撤回" aria-label="搜索帮助文档" /></label>
+    {keyword ? <div className="help-search-results">
+      {searchResults.map(({ chapter, snippet }) => <button key={chapter.id} type="button" onClick={() => { setActiveId(chapter.id); setQuery(""); }}><b>{chapter.title}</b><small>{chapter.category} · {snippet}</small></button>)}
+      {!searchResults.length ? <EmptyState icon={<CircleHelp size={20} />} title="没有找到相关内容" copy="换个关键词试试，或在目录中浏览全部章节。" /> : null}
+    </div> : <div className="help-body">
+      <nav className="help-toc" aria-label="帮助目录">
+        {groupedChapters.map(group => <div className="help-toc-group" key={group.category}>
+          <small>{group.category}</small>
+          {group.items.map(chapter => <button key={chapter.id} type="button" className={activeChapter.id === chapter.id ? "active" : ""} onClick={() => setActiveId(chapter.id)}>{chapter.title}</button>)}
+        </div>)}
+      </nav>
+      <article className="help-article" key={activeChapter.id}>
+        <span className="help-article-category">{activeChapter.category}</span>
+        <h3>{activeChapter.title}</h3>
+        <p className="help-article-summary">{activeChapter.summary}</p>
+        {activeChapter.sections.map((section, index) => <section key={`${activeChapter.id}-${index}`}>
+          {section.heading ? <h4>{section.heading}</h4> : null}
+          {section.paragraphs?.map(paragraph => <p key={paragraph.slice(0, 24)}>{paragraph}</p>)}
+          {section.steps ? <ol>{section.steps.map(step => <li key={step.slice(0, 24)}>{step}</li>)}</ol> : null}
+        </section>)}
+        <button className="help-feedback-link" type="button" onClick={onFeedback}><MessageSquareWarning size={16} /> 文档没说清楚？提交问题反馈</button>
+      </article>
+    </div>}
+  </div></DialogFrame>;
+}
+
+function AdminFeedbackPanel({ showToast }: { showToast: (message: string) => void }) {
+  const [items, setItems] = useState<FeedbackRecord[] | null>(null);
+  const [stats, setStats] = useState<FeedbackStats | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [pageFilter, setPageFilter] = useState("");
+  const [keyword, setKeyword] = useState("");
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [shots, setShots] = useState<Record<number, string>>({});
+
+  const load = useCallback(async () => {
+    try {
+      const payload: Record<string, unknown> = { action: "list_feedbacks", scope: "all" };
+      if (statusFilter) payload.status = statusFilter;
+      if (pageFilter) payload.pageName = pageFilter;
+      if (keyword.trim()) payload.keyword = keyword.trim();
+      const data = await postWorkspace<{ feedbacks: FeedbackRecord[]; stats: FeedbackStats }>(payload);
+      setItems(data.feedbacks);
+      setStats(data.stats);
+      setLoadError(null);
+    } catch (error) { setLoadError(error instanceof Error ? error.message : "读取反馈失败"); }
+  }, [statusFilter, pageFilter, keyword]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(load, 300);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  async function toggleDetail(item: FeedbackRecord) {
+    const next = expandedId === item.id ? null : item.id;
+    setExpandedId(next);
+    if (next && item.hasScreenshot && !shots[item.id]) {
+      try {
+        const data = await postWorkspace<{ feedback: { screenshot: string } }>({ action: "get_feedback", feedbackId: item.id });
+        setShots(prev => ({ ...prev, [item.id]: data.feedback.screenshot }));
+      } catch { /* 截图加载失败不阻断详情展示 */ }
+    }
+  }
+
+  return <div className="feedback-admin">
+    {stats ? <div className="feedback-stats"><span><b>{stats.total}</b><small>总数</small></span><span><b>{stats.open}</b><small>待处理</small></span><span><b>{stats.inProgress}</b><small>处理中</small></span><span><b>{stats.resolved}</b><small>已解决</small></span></div> : null}
+    <div className="feedback-filters">
+      <select value={statusFilter} onChange={event => setStatusFilter(event.target.value)} aria-label="按状态筛选"><option value="">全部状态</option>{Object.entries(FEEDBACK_STATUS_META).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select>
+      <select value={pageFilter} onChange={event => setPageFilter(event.target.value)} aria-label="按页面筛选"><option value="">全部页面</option>{FEEDBACK_PAGE_OPTIONS.map(page => <option key={page}>{page}</option>)}</select>
+      <label className="search-field"><Search size={20} /><input value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="搜索标题、描述或提交人" /></label>
+    </div>
+    {loadError ? <div className="field-error">{loadError}</div> : null}
+    {items === null && !loadError ? <p className="dialog-hint">正在加载反馈…</p> : null}
+    {items?.length === 0 ? <EmptyState icon={<MessageSquareWarning size={20} />} title="没有符合条件的反馈" copy="调整状态、页面或关键词筛选后重试。" /> : null}
+    <div className="feedback-list">{items?.map(item => <div className="feedback-item" key={item.id}>
+      <button type="button" className="feedback-item-head" aria-expanded={expandedId === item.id} onClick={() => toggleDetail(item)}>
+        <span className="feedback-item-title"><b>{item.title}</b>{item.adminResponse ? <em className="feedback-reply-badge">已回复</em> : null}<small>{item.createdByEmail} · {item.pageName}</small></span>
+        <span className="feedback-item-meta"><em className={`state-label ${FEEDBACK_STATUS_META[item.status]?.tone || "tone-neutral"}`} aria-label={`处理状态：${FEEDBACK_STATUS_META[item.status]?.label || item.status}`}>{FEEDBACK_STATUS_META[item.status]?.label || item.status}</em><small>{formatDate(item.createdAt)}</small></span>
+        <ChevronDown size={16} className={expandedId === item.id ? "is-open" : ""} />
+      </button>
+      {expandedId === item.id ? <FeedbackAdminDetail key={item.id} item={item} screenshot={item.hasScreenshot ? shots[item.id] || null : ""} onSaved={load} showToast={showToast} /> : null}
+    </div>)}</div>
+  </div>;
+}
+
+function FeedbackAdminDetail({ item, screenshot, onSaved, showToast }: { item: FeedbackRecord; screenshot: string | null; onSaved: () => Promise<void>; showToast: (message: string) => void }) {
+  const [status, setStatus] = useState(item.status);
+  const [response, setResponse] = useState(item.adminResponse);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  async function save() {
+    if ((status === "resolved" || status === "closed") && !response.trim()) {
+      setSaveError("请填写处理说明后再标记为已解决/已关闭");
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await postWorkspace({ action: "update_feedback", feedbackId: item.id, status, adminResponse: response.trim() });
+      showToast("反馈处理结果已保存");
+      await onSaved();
+    } catch (error) { setSaveError(error instanceof Error ? error.message : "保存失败，请重试"); }
+    finally { setSaving(false); }
+  }
+
+  return <div className="feedback-detail">
+    <p className="feedback-desc">{item.description}</p>
+    {item.hasScreenshot ? <div className="feedback-screenshot">{screenshot ? <>
+      {/* eslint-disable-next-line @next/next/no-img-element -- Base64 截图，next/image 不适用 */}
+      <img src={screenshot} alt={`${item.title} 截图`} />
+    </> : <small>截图加载中…</small>}</div> : null}
+    <div className="feedback-admin-form">
+      <label><FieldLabel text="处理状态" required /><select value={status} onChange={event => setStatus(event.target.value)}>{Object.entries(FEEDBACK_STATUS_META).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></label>
+      <label>管理员回复<textarea rows={3} value={response} onChange={event => setResponse(event.target.value)} placeholder="处理说明或答复，提交人可在「我的反馈」中看到" /></label>
+      {saveError ? <span className="field-error">{saveError}</span> : null}
+      <div className="form-actions"><button type="button" className="primary-action" disabled={saving || (status === item.status && response.trim() === item.adminResponse)} onClick={save}>{saving ? "保存中…" : "保存处理结果"}</button></div>
+    </div>
+  </div>;
 }
 
 function ManagedUserRow({ user, busy, isSelf, onSave }: { user: ManagedWorkspaceUser; busy: boolean; isSelf: boolean; onSave: (role: ManagedWorkspaceUser["role"], groupName: string) => Promise<boolean> }) {

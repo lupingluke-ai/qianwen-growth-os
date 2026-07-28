@@ -2,7 +2,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../../../db";
 import { getChatGPTUser } from "../../chatgpt-auth";
-import { notifyReviewSubmitted, notifyReviewDecision } from "../../lib/dingtalk-notification";
+import { notifyReviewSubmitted, notifyReviewDecision, notifyNewFeedback, notifyFeedbackResolved } from "../../lib/dingtalk-notification";
 import { ensureWorkspaceUser, hashPassword, logAction, type WorkspaceRole, type WorkspaceSessionUser } from "../../lib/workspace-db";
 import type { LevelDefinition } from "../../types";
 
@@ -57,6 +57,13 @@ const actionPayloadSchema = z.object({
   groupName: z.string().optional(),
   frameworkLevel: frameworkLevelSchema.optional(),
   changeNote: z.string().optional(),
+  pageName: z.string().optional(),
+  screenshot: z.string().optional(),
+  scope: z.enum(["mine", "all"]).optional(),
+  keyword: z.string().optional(),
+  feedbackId: z.number().int().optional(),
+  status: z.string().optional(),
+  adminResponse: z.string().optional(),
 });
 
 type ActionPayload = z.infer<typeof actionPayloadSchema>;
@@ -217,6 +224,10 @@ export async function POST(request: Request) {
       case "update_user_access": await updateUserAccess(session, payload); break;
       case "save_framework_level": await saveFrameworkLevel(session, payload); break;
       case "publish_framework": await publishFramework(session, payload); break;
+      case "submit_feedback": await submitFeedback(session, payload); break;
+      case "list_feedbacks": return Response.json(await listFeedbacks(session, payload));
+      case "get_feedback": return Response.json(await getFeedback(session, payload));
+      case "update_feedback": await updateFeedback(session, payload); break;
       default: return Response.json({ error: "不支持的操作" }, { status: 400 });
     }
     return Response.json({ ok: true });
@@ -557,6 +568,130 @@ async function publishFramework(session: SessionUser, payload: ActionPayload) {
     WHERE id = ${draft.id}
   `);
   await logAction(session.email, "发布能力体系", "framework", draft.id, clean(payload.changeNote));
+}
+
+const FEEDBACK_STATUSES = ["open", "in_progress", "resolved", "closed"];
+const SCREENSHOT_MAX_LENGTH = 2_800_000; // 压缩后 Base64 上限约 2.8MB
+
+const feedbackSelect = sql`
+  SELECT f.id, f.title, f.description, f.page_name AS "pageName", f.status,
+    COALESCE(f.admin_response, '') AS "adminResponse", f.created_by_email AS "createdByEmail",
+    to_char(f.created_at, 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
+    COALESCE(to_char(f.resolved_at, 'YYYY-MM-DD HH24:MI:SS'), '') AS "resolvedAt",
+    (f.screenshot IS NOT NULL AND f.screenshot != '') AS "hasScreenshot"
+  FROM feedbacks f
+`;
+
+async function submitFeedback(session: SessionUser, payload: ActionPayload) {
+  const title = clean(payload.title);
+  const description = String(payload.description || "").trim();
+  const pageName = clean(payload.pageName);
+  const screenshot = String(payload.screenshot || "");
+  if (!title) throw new Error("请填写问题标题");
+  if (title.length > 100) throw new Error("问题标题最多 100 字");
+  if (!description) throw new Error("请填写问题描述");
+  if (description.length > 2000) throw new Error("问题描述最多 2000 字");
+  if (!pageName) throw new Error("请选择问题所在页面");
+  if (screenshot && !screenshot.startsWith("data:image/")) throw new Error("截图格式不合法");
+  if (screenshot.length > SCREENSHOT_MAX_LENGTH) throw new Error("截图过大，请压缩后重试");
+  const inserted = await first<{ id: number }>(sql`
+    INSERT INTO feedbacks (member_id, created_by_email, title, description, page_name, screenshot, status)
+    VALUES (${session.memberId}, ${session.email}, ${title}, ${description}, ${pageName}, ${screenshot || null}, 'open')
+    RETURNING id
+  `);
+  await logAction(session.email, "提交问题反馈", "feedback", Number(inserted?.id || 0), `page=${pageName}`);
+
+  // 钉钉通知全部已绑定的管理员（失败不影响提交成功；必须 await：Vercel Serverless 在响应返回后会冻结进程）
+  const admins = await all<{ dingtalkUnionId: string }>(sql`
+    SELECT dingtalk_union_id AS "dingtalkUnionId" FROM workspace_users
+    WHERE role = 'admin' AND dingtalk_union_id IS NOT NULL AND dingtalk_union_id != ''
+  `);
+  if (admins.length) {
+    await notifyNewFeedback({
+      adminUnionIds: admins.map(admin => admin.dingtalkUnionId),
+      title,
+      submitterName: session.displayName,
+      pageName,
+      detailUrl: "https://qianwen-growth-os.vercel.app",
+    });
+  } else {
+    console.log("[dingtalk] 跳过通知：没有已绑定钉钉的管理员");
+  }
+}
+
+async function listFeedbacks(session: SessionUser, payload: ActionPayload) {
+  const scope = payload.scope || "mine";
+  if (scope === "all") requireAdmin(session);
+  const conditions: SQL[] = [scope === "all" ? sql`1 = 1` : sql`f.created_by_email = ${session.email}`];
+  if (payload.status && FEEDBACK_STATUSES.includes(payload.status)) conditions.push(sql`f.status = ${payload.status}`);
+  if (payload.pageName?.trim()) conditions.push(sql`f.page_name = ${clean(payload.pageName)}`);
+  const keyword = clean(payload.keyword);
+  if (keyword) {
+    const pattern = `%${keyword}%`;
+    conditions.push(sql`(f.title ILIKE ${pattern} OR f.description ILIKE ${pattern} OR f.created_by_email ILIKE ${pattern})`);
+  }
+  const where = conditions.reduce((acc, condition) => sql`${acc} AND ${condition}`);
+  // 列表不返回 screenshot 大字段，前端按需通过 get_feedback 获取
+  const feedbacks = await all<Record<string, unknown>>(sql`${feedbackSelect} WHERE ${where} ORDER BY f.created_at DESC LIMIT 500`);
+  if (scope !== "all") return { feedbacks };
+  // stats 与列表复用同一组筛选条件（不加 LIMIT），保证统计卡片与列表口径一致
+  const stats = await first<{ total: number; open: number; inProgress: number; resolved: number }>(sql`
+    SELECT COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE f.status = 'open')::int AS open,
+      COUNT(*) FILTER (WHERE f.status = 'in_progress')::int AS "inProgress",
+      COUNT(*) FILTER (WHERE f.status = 'resolved')::int AS resolved
+    FROM feedbacks f WHERE ${where}
+  `);
+  return { feedbacks, stats: stats || { total: 0, open: 0, inProgress: 0, resolved: 0 } };
+}
+
+async function getFeedback(session: SessionUser, payload: ActionPayload) {
+  if (!payload.feedbackId) throw new Error("缺少反馈 ID");
+  const feedback = await first<Record<string, unknown>>(sql`
+    SELECT f.id, f.title, f.description, f.page_name AS "pageName", COALESCE(f.screenshot, '') AS screenshot,
+      f.status, COALESCE(f.admin_response, '') AS "adminResponse", f.created_by_email AS "createdByEmail",
+      to_char(f.created_at, 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
+      COALESCE(to_char(f.resolved_at, 'YYYY-MM-DD HH24:MI:SS'), '') AS "resolvedAt"
+    FROM feedbacks f WHERE f.id = ${payload.feedbackId}
+  `);
+  if (!feedback) throw new Error("反馈不存在");
+  if (feedback.createdByEmail !== session.email && session.role !== "admin") throw new Error("没有查看该反馈的权限");
+  return { feedback };
+}
+
+async function updateFeedback(session: SessionUser, payload: ActionPayload) {
+  requireAdmin(session);
+  if (!payload.feedbackId) throw new Error("缺少反馈 ID");
+  if (!FEEDBACK_STATUSES.includes(payload.status || "")) throw new Error("请选择处理状态");
+  const feedback = await first<{ id: number; memberId: number; title: string }>(sql`
+    SELECT id, member_id AS "memberId", title FROM feedbacks WHERE id = ${payload.feedbackId}
+  `);
+  if (!feedback) throw new Error("反馈不存在");
+  const adminResponse = clean(payload.adminResponse);
+  const resolved = payload.status === "resolved" || payload.status === "closed";
+  await run(sql`
+    UPDATE feedbacks SET status = ${payload.status}, admin_response = ${adminResponse || null},
+      resolved_at = ${resolved ? sql`now()` : sql`NULL`}, updated_at = now()
+    WHERE id = ${feedback.id}
+  `);
+  await logAction(session.email, "处理问题反馈", "feedback", feedback.id, `status=${payload.status}`);
+
+  // 置为 resolved 且有回复时钉钉通知提交人（失败不影响返回成功）
+  if (payload.status === "resolved" && adminResponse) {
+    const submitter = await first<{ email: string; dingtalkUnionId: string | null }>(sql`
+      SELECT email, dingtalk_union_id AS "dingtalkUnionId" FROM workspace_users WHERE member_id = ${feedback.memberId}
+    `);
+    if (submitter?.dingtalkUnionId) {
+      await notifyFeedbackResolved({
+        submitterUnionId: submitter.dingtalkUnionId,
+        title: feedback.title,
+        adminResponse,
+        detailUrl: "https://qianwen-growth-os.vercel.app",
+      });
+    } else {
+      console.log("[dingtalk] 跳过通知：提交人未绑定钉钉", submitter?.email ?? `memberId=${feedback.memberId}`);
+    }
+  }
 }
 
 async function ensureDraftFramework(actorEmail: string, note?: string) {

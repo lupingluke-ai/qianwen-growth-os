@@ -141,6 +141,24 @@ export const frameworkLevels = pgTable("framework_levels", {
   index("framework_level_version_idx").on(table.frameworkVersionId, table.level),
 ]);
 
+export const feedbacks = pgTable("feedbacks", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id").notNull().references(() => members.id),
+  createdByEmail: text("created_by_email").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  pageName: text("page_name").notNull(),
+  screenshot: text("screenshot"),
+  status: text("status").notNull().default("open"),
+  adminResponse: text("admin_response"),
+  resolvedAt: timestamp("resolved_at", { mode: "string" }),
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+}, table => [
+  index("feedback_member_idx").on(table.memberId),
+  index("feedback_status_idx").on(table.status),
+]);
+
 export const auditLogs = pgTable("audit_logs", {
   id: serial("id").primaryKey(),
   actorEmail: text("actor_email").notNull(),

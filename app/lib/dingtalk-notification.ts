@@ -179,3 +179,50 @@ export async function notifyReviewDecision(params: {
     console.error("[dingtalk] notifyReviewDecision 异常:", err);
   }
 }
+
+// ─── 高级封装：新问题反馈通知（发给全部已绑定钉钉的管理员）─────────────────────
+export async function notifyNewFeedback(params: {
+  adminUnionIds: string[];
+  title: string;
+  submitterName: string;
+  pageName: string;
+  detailUrl: string;
+}): Promise<void> {
+  try {
+    for (const unionId of params.adminUnionIds) {
+      const userId = await getUsedIdByUnionId(unionId);
+      if (!userId) continue;
+
+      await sendWorkNotification({
+        userId,
+        title: "收到新问题反馈",
+        content: `收到新问题反馈：${params.title}（来自 ${params.submitterName}，页面：${params.pageName}）`,
+        detailUrl: params.detailUrl,
+      });
+    }
+  } catch (err) {
+    console.error("[dingtalk] notifyNewFeedback 异常:", err);
+  }
+}
+
+// ─── 高级封装：反馈处理结果通知（发给提交人）──────────────────────────────────
+export async function notifyFeedbackResolved(params: {
+  submitterUnionId: string;
+  title: string;
+  adminResponse: string;
+  detailUrl: string;
+}): Promise<void> {
+  try {
+    const userId = await getUsedIdByUnionId(params.submitterUnionId);
+    if (!userId) return;
+
+    await sendWorkNotification({
+      userId,
+      title: "你的问题反馈已解决",
+      content: `你反馈的「${params.title}」已解决。\n管理员回复：${params.adminResponse.slice(0, 200)}`,
+      detailUrl: params.detailUrl,
+    });
+  } catch (err) {
+    console.error("[dingtalk] notifyFeedbackResolved 异常:", err);
+  }
+}
