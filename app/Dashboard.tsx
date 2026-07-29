@@ -476,7 +476,6 @@ export default function Dashboard({ levels: fallbackLevels, stageMeta }: Props) 
   }, [workspace?.workspaceUsers]);
   const roleLabel = workspace?.me?.role === "admin" ? "管理员" : workspace?.me?.role === "reviewer" ? "成员 · 评审人" : "成员";
   const canDecideSelected = Boolean(selectedReview && (workspace?.me?.role === "admin" || selectedReview.reviewerEmail === workspace?.me?.email));
-  const currentStage = stageForLevel(myMember?.currentLevel ?? workspace?.metrics.median ?? 0, stageMeta);
   const nextLevelCoveredCount = nextLevelEvidence.filter(item => nextLevelDef.criteria.some(criterion => criterion.id === item.criterionKey)).length;
   const daysSinceUpdate = myMember?.updatedAt ? Math.floor((Date.parse(TODAY) - Date.parse(myMember.updatedAt.slice(0, 10))) / 86400000) : null;
   const checkinStale = daysSinceUpdate !== null && Number.isFinite(daysSinceUpdate) && daysSinceUpdate > 7;
@@ -633,8 +632,8 @@ export default function Dashboard({ levels: fallbackLevels, stageMeta }: Props) 
 
   function copyUncheckedList() {
     const names = (workspace?.members || []).filter(member => !member.checkedInThisMonth).map(member => member.name);
-    if (!names.length) { showToast("本月所有成员都已更新进展"); return; }
-    navigator.clipboard.writeText(`本月尚未更新成长进展（${names.length} 人）：${names.join("、")}`)
+    if (!names.length) { showToast("本月所有成员都已记录进展"); return; }
+    navigator.clipboard.writeText(`本月尚未记录成长进展（${names.length} 人）：${names.join("、")}`)
       .then(() => showToast(`已复制 ${names.length} 位未更新成员名单`))
       .catch(() => showToast("复制失败，请重试"));
   }
@@ -687,12 +686,12 @@ export default function Dashboard({ levels: fallbackLevels, stageMeta }: Props) 
       {activeView === "growth" && workspace ? <section className="workspace-view growth-view">
         <div className="page-heading compact-heading">
           <div><h1>我的成长 <span>专注下一次升级</span></h1><p className="heading-summary">{myMember ? `当前 L${myMember.currentLevel} · ${atTopLevel ? `已登顶 L${maxLevel}` : `下一级 L${nextLevelNumber}`} · ${myMember.progressStatus}` : `团队中位 L${workspace.metrics.median} · 从真实工作结果开始`}</p></div>
-          <span className="cycle-indicator">{CURRENT_CYCLE} 周期 <ChevronDown size={16} /></span>
+          {myMember ? <button className={`progress-record-action${checkinStale ? " is-stale" : ""}`} type="button" onClick={openCheckin}><PenLine size={16} />进展记录</button> : <span className="cycle-indicator">{CURRENT_CYCLE} 周期 <ChevronDown size={16} /></span>}
         </div>
 
         <div className="growth-command-layout">
           <section className="growth-hero-panel">
-            <div className="growth-hero-top"><span>{myMember ? "当前认证" : "团队中位层级"}</span><div className="growth-hero-top-actions"><em>{CURRENT_CYCLE} 周期 · {currentStage.label}</em>{workspace.authenticated && myMember ? <button className={`hero-cta${checkinStale ? " is-stale" : ""}`} onClick={openCheckin}><PenLine size={14} />更新进展</button> : null}</div></div>
+            <div className="growth-hero-top"><span>{myMember ? "当前认证" : "团队中位层级"}</span></div>
             <div className="growth-level-lockup"><div className="current-level-mark"><strong>L{myMember?.currentLevel ?? workspace.metrics.median}</strong>{myMember && !atTopLevel ? <em>距离 L{nextLevelNumber} 还差 {Math.max(0, nextLevelDef.criteria.length - nextLevelCoveredCount)} 项证据</em> : null}</div><div><small>{myMember ? "下一级" : "体系起点"}</small><b>{myMember ? `L${nextLevelNumber} · ${nextLevelDef.title} · ${nextLevelCoveredCount}/${nextLevelDef.criteria.length}已覆盖` : `L1 · ${activeLevels[0].title} · 登录后开始逐层爬坡`}</b><span>{!myMember ? "从真实工作结果开始" : atTopLevel ? "已抵达体系最高层级" : myMember.reviewStatus === "已通过" ? "已晋级，请更新进展设定新一级计划" : nextLevelDef.definition}</span>{myMember && !atTopLevel && myMember.reviewStatus !== "已通过" ? <em className="hero-target-date">计划 {formatDate(myMember.targetDate)} 前完成</em> : null}</div></div>
             <div className="growth-progress" aria-label="成长进度">
               {activeLevels.map(level => {
@@ -848,8 +847,8 @@ export default function Dashboard({ levels: fallbackLevels, stageMeta }: Props) 
       </div>
     </div></DialogFrame> : null}
 
-    {checkinDraft ? <DialogFrame title="更新成长进展" onClose={() => setCheckinDraft(null)} size="wide"><form className="dialog-form" onSubmit={async (event: FormEvent) => { event.preventDefault(); if (checkinDraft.targetDate && checkinDraft.targetDate < TODAY) { setFormErrors(prev => ({ ...prev, checkinDate: "完成日期不能早于今天" })); return; } const ok = await mutate({ action: "update_checkin", ...checkinDraft }, "进展已更新"); if (ok) setCheckinDraft(null); }}>
-      <div className="dialog-heading"><span>PERSONAL CHECK-IN</span><h2>更新成长进展</h2></div>
+    {checkinDraft ? <DialogFrame title="进展记录" onClose={() => setCheckinDraft(null)} size="wide"><form className="dialog-form" onSubmit={async (event: FormEvent) => { event.preventDefault(); if (checkinDraft.targetDate && checkinDraft.targetDate < TODAY) { setFormErrors(prev => ({ ...prev, checkinDate: "完成日期不能早于今天" })); return; } const ok = await mutate({ action: "update_checkin", ...checkinDraft }, "进展已保存"); if (ok) setCheckinDraft(null); }}>
+      <div className="dialog-heading"><span>PERSONAL CHECK-IN</span><h2>进展记录</h2></div>
       <div className="certified-banner"><BadgeCheck size={20} /><span><small>当前认证层级</small><b>L{workspace?.members.find(item => item.id === checkinDraft.memberId)?.currentLevel ?? 0} · 下一级 L{nextLevelNumber} · 逐层爬坡</b></span></div>
       <div className="form-section-label">本周打卡<small>建议每周更新一次 · 上次更新 {formatDate(workspace?.members.find(item => item.id === checkinDraft.memberId)?.updatedAt || "")}</small></div>
       <div className="form-grid"><label><FieldLabel text="推进状态" required /><select value={checkinDraft.progressStatus} onChange={event => setCheckinDraft({ ...checkinDraft, progressStatus: event.target.value })}>{["正常", "进行中", "有风险", "阻塞"].map(status => <option key={status}>{status}</option>)}</select></label><label><FieldLabel text="下一级计划完成日期" required /><input type="date" min={TODAY} value={checkinDraft.targetDate} aria-invalid={!!formErrors.checkinDate} aria-describedby={formErrors.checkinDate ? "checkin-date-error" : undefined} onChange={event => { setCheckinDraft({ ...checkinDraft, targetDate: event.target.value }); setFormErrors(prev => { const { checkinDate, ...rest } = prev; return rest; }); }} />{formErrors.checkinDate ? <span id="checkin-date-error" className="field-error">{formErrors.checkinDate}</span> : null}</label></div>
@@ -873,7 +872,7 @@ export default function Dashboard({ levels: fallbackLevels, stageMeta }: Props) 
         <label>材料链接<input type="url" value={evidenceDraft.url} onChange={event => setEvidenceDraft({ ...evidenceDraft, url: event.target.value })} placeholder="https://…（可选）" /></label>
       </div>
       <section className={`evidence-sync-option${evidenceDraft.nominateAsset ? " is-selected" : ""}`}>
-        <label className="evidence-sync-toggle"><input type="checkbox" checked={evidenceDraft.nominateAsset} onChange={event => setEvidenceDraft({ ...evidenceDraft, nominateAsset: event.target.checked })} /><Library size={20} /><span><b>晋级通过后同步到成果库</b><small>本条证据会随对应层级的晋级申请一并核验；申请通过后自动发布，无需单独提交成果评审。</small></span></label>
+        <label className="evidence-sync-toggle"><input className="evidence-sync-checkbox" type="checkbox" checked={evidenceDraft.nominateAsset} onChange={event => setEvidenceDraft({ ...evidenceDraft, nominateAsset: event.target.checked })} /><span className="evidence-sync-check" aria-hidden="true"><Check size={13} /></span><Library size={20} /><span><b>晋级通过后同步到成果库</b><small>本条证据会随对应层级的晋级申请一并核验；申请通过后自动发布，无需单独提交成果评审。</small></span></label>
         {evidenceDraft.nominateAsset ? <label className="evidence-asset-type"><FieldLabel text="成果类型" required /><select value={evidenceDraft.assetType} onChange={event => setEvidenceDraft({ ...evidenceDraft, assetType: event.target.value })}>{["Skill", "知识库", "评测集", "原型", "行业实践"].map(type => <option key={type}>{type}</option>)}</select><small>成果名称沿用证据标题，说明沿用业务结果，材料链接同步为成果链接。</small></label> : null}
       </section>
       {submitError && <div className="field-error">提交失败，请重试</div>}
