@@ -15,10 +15,10 @@ export const levels: LevelDefinition[] = [
 ];
 
 export const stageMeta: StageMeta[] = [
-  { label: "会用 AI", range: "L0–L3", color: "#3977f6", copy: "全员通用" },
-  { label: "会建 AI", range: "L4–L6", color: "#7c5ce5", copy: "岗位主赛道" },
-  { label: "会解 AI", range: "L7–L9", color: "#e17a37", copy: "专家纵深" },
-  { label: "会赢 AI", range: "L10", color: "#159b76", copy: "商业价值" },
+  { label: "会用 AI", range: "L0–L3", color: "#41D87E", copy: "全员通用" },
+  { label: "会建 AI", range: "L4–L6", color: "#C7C2FF", copy: "岗位主赛道" },
+  { label: "会解 AI", range: "L7–L9", color: "#ED8047", copy: "专家纵深" },
+  { label: "会赢 AI", range: "L10", color: "#BBF25A", copy: "商业价值" },
 ];
 
 export const industryAnchors: IndustryAnchor[] = [

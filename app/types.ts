@@ -50,6 +50,7 @@ export type WorkspaceMember = {
   nextTask: string;
   updatedAt: string;
   evidenceCount: number;
+  publishedAssetCount: number;
   pendingReviewId: number | null;
   overdueTasks: number;
   checkedInThisMonth: boolean;
@@ -67,6 +68,7 @@ export type Evidence = {
   outcome: string;
   status: string;
   nominateAsset: number;
+  assetType: string;
   createdAt: string;
 };
 
@@ -99,10 +101,28 @@ export type AssetRecord = {
   reviewStatus: string;
   reviewFeedback: string;
   complianceStatus: string;
+  reviewerEmail: string;
+  reviewerName: string;
   reusePeople: number;
   reuseClients: number;
+  reuseTimes: number;
+  reuseMemberNames: string;
+  createdAt: string;
   updatedAt: string;
   url: string;
+};
+
+export type AssetReuseEvent = {
+  assetId: number;
+  memberId: number;
+  createdAt: string;
+};
+
+export type PromotionHistoryItem = {
+  memberId: number;
+  fromLevel: number;
+  toLevel: number;
+  createdAt: string;
 };
 
 export type WorkspaceUser = {
@@ -156,6 +176,8 @@ export type WorkspacePayload = {
   evidences: Evidence[];
   reviews: Review[];
   assets: AssetRecord[];
+  assetReuseEvents: AssetReuseEvent[];
+  promotionHistory: PromotionHistoryItem[];
   reviewers: ReviewerOption[];
   workspaceUsers: ManagedWorkspaceUser[];
   levels: LevelDefinition[];

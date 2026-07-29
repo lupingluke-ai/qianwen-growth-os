@@ -1,8 +1,16 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import { Noto_Sans_SC } from "next/font/google";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import "./globals.css";
+
+const notoSansSC = Noto_Sans_SC({
+  variable: "--font-noto-sans-sc",
+  display: "swap",
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+});
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -21,5 +29,5 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="zh-CN" className={`${GeistSans.variable} ${GeistMono.variable}`}><body>{children}</body></html>;
+  return <html lang="zh-CN" className={`${notoSansSC.variable} ${GeistSans.variable} ${GeistMono.variable}`}><body>{children}</body></html>;
 }

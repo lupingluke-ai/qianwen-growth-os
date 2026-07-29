@@ -36,6 +36,41 @@
       "when": 1785224813302,
       "tag": "0004_dark_callisto",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785250706592,
+      "tag": "0005_optimal_lockheed",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785256088250,
+      "tag": "0006_asset_status_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785259768854,
+      "tag": "0007_opposite_ulik",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785261600000,
+      "tag": "0008_asset_reviewer_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785262200000,
+      "tag": "0009_evidence_asset_sync",
+      "breakpoints": true
     }
   ]
 }

@@ -2,7 +2,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../../../db";
 import { getChatGPTUser } from "../../chatgpt-auth";
-import { notifyReviewSubmitted, notifyReviewDecision, notifyNewFeedback, notifyFeedbackResolved } from "../../lib/dingtalk-notification";
+import { notifyReviewSubmitted, notifyReviewDecision, notifyNewFeedback, notifyFeedbackResolved, notifyAssetReviewSubmitted, notifyAssetReviewDecision } from "../../lib/dingtalk-notification";
 import { ensureWorkspaceUser, hashPassword, logAction, type WorkspaceRole, type WorkspaceSessionUser } from "../../lib/workspace-db";
 import type { LevelDefinition } from "../../types";
 
@@ -93,6 +93,7 @@ const memberSelect = sql`
     to_char(m.updated_at, 'YYYY-MM-DD HH24:MI:SS') AS "updatedAt",
     CASE WHEN to_char(m.last_checkin, 'YYYY-MM') = to_char(now(), 'YYYY-MM') THEN 1 ELSE 0 END AS "checkedInThisMonth",
     (SELECT COUNT(*)::int FROM evidences e WHERE e.member_id = m.id) AS "evidenceCount",
+    (SELECT COUNT(*)::int FROM assets a WHERE a.owner_member_id = m.id AND a.review_status = '已发布') AS "publishedAssetCount",
     (SELECT r.id FROM reviews r WHERE r.member_id = m.id AND r.state IN ('已提交','评审中','待补证') ORDER BY r.id DESC LIMIT 1) AS "pendingReviewId",
     (SELECT COUNT(*)::int FROM growth_tasks t WHERE t.member_id = m.id AND (t.status = '逾期' OR (t.status != '已完成' AND t.due_date < to_char(CURRENT_DATE, 'YYYY-MM-DD')))) AS "overdueTasks"
   FROM members m
@@ -116,7 +117,7 @@ export async function GET() {
     const evidences = await all<Record<string, unknown>>(sql`
       SELECT e.id, e.member_id AS "memberId", m.name AS "memberName", e.level,
         e.criterion_key AS "criterionKey", e.title, e.kind, e.url, e.outcome,
-        e.status, e.nominate_asset AS "nominateAsset",
+        e.status, e.nominate_asset AS "nominateAsset", e.asset_type AS "assetType",
         to_char(e.created_at, 'YYYY-MM-DD HH24:MI:SS') AS "createdAt"
       FROM evidences e JOIN members m ON m.id = e.member_id
       ${evidenceWhere} ORDER BY e.created_at DESC LIMIT 400
@@ -142,15 +143,24 @@ export async function GET() {
       ORDER BY CASE r.state WHEN '已提交' THEN 1 WHEN '评审中' THEN 2 WHEN '待补证' THEN 3 ELSE 4 END, r.submitted_at DESC
     `);
 
-    // 已撤回的成果仅所有者可见
-    const assetWhere = session
-      ? sql`WHERE a.review_status != '已撤回' OR a.owner_member_id = ${session.memberId}`
-      : sql`WHERE a.review_status != '已撤回'`;
+    // 发布前成果只对申请人、指定主评人与管理员可见；游客仅浏览已发布成果。
+    const assetWhere = !session
+      ? sql`WHERE a.review_status = '已发布'`
+      : session.role === "admin"
+        ? sql``
+        : session.role === "reviewer"
+          ? sql`WHERE a.review_status = '已发布' OR a.owner_member_id = ${session.memberId} OR a.reviewer_email = ${session.email}`
+          : sql`WHERE a.review_status = '已发布' OR a.owner_member_id = ${session.memberId}`;
     const assetRows = await all<Record<string, unknown>>(sql`
       SELECT a.id, a.title, COALESCE(a.description, '') AS "description", a.type, a.industry, m.name AS "ownerName", a.owner_member_id AS "ownerMemberId",
         a.source_evidence_id AS "sourceEvidenceId", a.review_status AS "reviewStatus",
-        a.compliance_status AS "complianceStatus", a.reuse_people AS "reusePeople",
-        a.reuse_clients AS "reuseClients", to_char(a.updated_at, 'YYYY-MM-DD HH24:MI:SS') AS "updatedAt", a.url,
+        a.compliance_status AS "complianceStatus",
+        a.reviewer_email AS "reviewerEmail", COALESCE(NULLIF(a.reviewer_name, ''), '待指定') AS "reviewerName",
+        (SELECT COUNT(DISTINCT re.member_id)::int FROM asset_reuse_events re WHERE re.asset_id = a.id) AS "reusePeople",
+        (SELECT COUNT(*)::int FROM asset_reuse_events re WHERE re.asset_id = a.id) AS "reuseTimes",
+        (SELECT COALESCE(string_agg(DISTINCT m2.name, '、'), '') FROM asset_reuse_events re JOIN members m2 ON m2.id = re.member_id WHERE re.asset_id = a.id) AS "reuseMemberNames",
+        a.reuse_clients AS "reuseClients", to_char(a.created_at, 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
+        to_char(a.updated_at, 'YYYY-MM-DD HH24:MI:SS') AS "updatedAt", a.url,
         COALESCE(a.review_feedback, '') AS "reviewFeedback"
       FROM assets a JOIN members m ON m.id = a.owner_member_id
       ${assetWhere}
@@ -158,10 +168,30 @@ export async function GET() {
     `);
     const assets = assetRows.map(asset => session ? asset : { ...asset, ownerName: "团队成员" });
 
+    // 团队分析仅使用无姓名的时间序列，支撑按周期与团队维度统计新增、晋级与复用。
+    const assetReuseEvents = await all<Record<string, unknown>>(sql`
+      SELECT re.asset_id AS "assetId", re.member_id AS "memberId",
+        to_char(re.created_at, 'YYYY-MM-DD HH24:MI:SS') AS "createdAt"
+      FROM asset_reuse_events re JOIN assets a ON a.id = re.asset_id
+      ${assetWhere}
+      ORDER BY re.created_at DESC LIMIT 2000
+    `);
+    const promotionWhere = !session ? sql`WHERE 1 = 0` : sql``;
+    const promotionHistory = await all<Record<string, unknown>>(sql`
+      SELECT lh.member_id AS "memberId", lh.from_level AS "fromLevel", lh.to_level AS "toLevel",
+        to_char(lh.created_at, 'YYYY-MM-DD HH24:MI:SS') AS "createdAt"
+      FROM level_history lh
+      ${promotionWhere}
+      ORDER BY lh.created_at DESC LIMIT 1000
+    `);
+
     const reviewers = session ? await all<Record<string, unknown>>(sql`
       SELECT wu.email, wu.display_name AS "displayName", wu.role, wu.member_id AS "memberId",
         m.group_name AS "groupName", m.industry,
-        (SELECT COUNT(*)::int FROM reviews r WHERE r.reviewer_email = wu.email AND r.state IN ('已提交','评审中','待补证')) AS "pendingCount"
+        (
+          (SELECT COUNT(*)::int FROM reviews r WHERE r.reviewer_email = wu.email AND r.state IN ('已提交','评审中','待补证')) +
+          (SELECT COUNT(*)::int FROM assets a WHERE a.reviewer_email = wu.email AND a.review_status = '待审核')
+        ) AS "pendingCount"
       FROM workspace_users wu JOIN members m ON m.id = wu.member_id
       WHERE wu.role IN ('reviewer','admin')
       ORDER BY "pendingCount" ASC, wu.display_name ASC
@@ -184,6 +214,8 @@ export async function GET() {
       evidences,
       reviews,
       assets,
+      assetReuseEvents,
+      promotionHistory,
       reviewers,
       workspaceUsers,
       levels: framework.published.levels,
@@ -217,9 +249,11 @@ export async function POST(request: Request) {
       case "resubmit_review": await resubmitReview(session, payload); break;
       case "review_decision": await reviewDecision(session, payload); break;
       case "create_asset": await createAsset(session, payload); break;
+      case "update_asset": await updateAsset(session, payload); break;
       case "resubmit_asset": await resubmitAsset(session, payload); break;
       case "review_asset": await reviewAsset(session, payload); break;
       case "withdraw_asset": await withdrawAsset(session, payload); break;
+      case "track_asset_reuse": await trackAssetReuse(session, payload); break;
       case "create_user": await createUser(session, payload); break;
       case "update_user_access": await updateUserAccess(session, payload); break;
       case "save_framework_level": await saveFrameworkLevel(session, payload); break;
@@ -239,7 +273,8 @@ export async function POST(request: Request) {
 }
 
 async function updateCheckin(session: SessionUser, payload: ActionPayload) {
-  const memberId = await authorizedMemberId(session, payload.memberId);
+  if (payload.memberId !== undefined && payload.memberId !== session.memberId) throw new Error("只能更新自己的成长进展");
+  const memberId = session.memberId;
   const current = await first<{ currentLevel: number }>(sql`SELECT current_level AS "currentLevel" FROM members WHERE id = ${memberId}`);
   if (!current) throw new Error("成员不存在");
   // 去掉“设目标”机制：下一级恒为 current+1（封顶 L10），target_level 仅作为下一级的内部记录自动维护
@@ -272,23 +307,18 @@ async function completeOnboarding(session: SessionUser, payload: ActionPayload) 
 async function addEvidence(session: SessionUser, payload: ActionPayload) {
   const memberId = await authorizedMemberId(session, payload.memberId);
   if (!payload.title?.trim() || !payload.criterionKey?.trim()) throw new Error("请填写证据标题并关联通关标准");
-  if (payload.nominateAsset && !payload.complianceConfirmed) throw new Error("推荐为团队成果前请完成合规自查");
   const level = clampLevel(payload.level || 1);
+  const nominateAsset = Boolean(payload.nominateAsset);
+  const assetType = nominateAsset ? clean(payload.assetType) : "Skill";
+  if (nominateAsset && !ASSET_TYPES.includes(assetType)) throw new Error("请选择有效的成果类型");
   const inserted = await first<{ id: number }>(sql`
-    INSERT INTO evidences (member_id, level, criterion_key, title, kind, url, outcome, status, nominate_asset, created_by_email)
-    VALUES (${memberId}, ${level}, ${clean(payload.criterionKey)}, ${clean(payload.title)}, ${clean(payload.kind) || "链接"}, ${clean(payload.url)}, ${clean(payload.outcome)}, '待核验', ${payload.nominateAsset ? 1 : 0}, ${session.email})
+    INSERT INTO evidences (member_id, level, criterion_key, title, kind, url, outcome, status, nominate_asset, asset_type, created_by_email)
+    VALUES (${memberId}, ${level}, ${clean(payload.criterionKey)}, ${clean(payload.title)}, ${clean(payload.kind) || "链接"}, ${clean(payload.url)}, ${clean(payload.outcome)}, '待核验', ${nominateAsset ? 1 : 0}, ${assetType}, ${session.email})
     RETURNING id
   `);
   const evidenceId = Number(inserted?.id || 0);
-  if (payload.nominateAsset) {
-    const member = await first<{ industry: string }>(sql`SELECT industry FROM members WHERE id = ${memberId}`);
-    await run(sql`
-      INSERT INTO assets (title, type, industry, owner_member_id, source_evidence_id, review_status, compliance_status, url)
-      VALUES (${clean(payload.title)}, ${assetTypeForEvidence(payload.kind)}, ${member?.industry || "通用"}, ${memberId}, ${evidenceId}, '待审核', '已自查', ${clean(payload.url)})
-    `);
-  }
   await run(sql`UPDATE members SET review_status = '草稿', updated_at = now() WHERE id = ${memberId}`);
-  await logAction(session.email, "添加晋级证据", "evidence", evidenceId, `member=${memberId};level=${level};asset=${payload.nominateAsset ? 1 : 0}`);
+  await logAction(session.email, "添加晋级证据", "evidence", evidenceId, `member=${memberId};level=${level};syncAsset=${nominateAsset}`);
 }
 
 async function requireEditableEvidence(session: SessionUser, evidenceId?: number) {
@@ -307,16 +337,22 @@ async function updateEvidence(session: SessionUser, payload: ActionPayload) {
   const evidence = await requireEditableEvidence(session, payload.evidenceId);
   if (!payload.title?.trim() || !payload.criterionKey?.trim()) throw new Error("请填写证据标题并关联通关标准");
   const level = clampLevel(payload.level || evidence.level);
+  const nominateAsset = Boolean(payload.nominateAsset);
+  const assetType = nominateAsset ? clean(payload.assetType) : "Skill";
+  if (nominateAsset && !ASSET_TYPES.includes(assetType)) throw new Error("请选择有效的成果类型");
   await run(sql`
     UPDATE evidences SET level = ${level}, criterion_key = ${clean(payload.criterionKey)}, title = ${clean(payload.title)},
-      kind = ${clean(payload.kind) || "链接"}, url = ${clean(payload.url)}, outcome = ${clean(payload.outcome)}, status = '待核验'
+      kind = ${clean(payload.kind) || "链接"}, url = ${clean(payload.url)}, outcome = ${clean(payload.outcome)},
+      nominate_asset = ${nominateAsset ? 1 : 0}, asset_type = ${assetType}, status = '待核验'
     WHERE id = ${evidence.id}
   `);
-  await logAction(session.email, "编辑晋级证据", "evidence", evidence.id, `level=${level}`);
+  await logAction(session.email, "编辑晋级证据", "evidence", evidence.id, `level=${level};syncAsset=${nominateAsset}`);
 }
 
 async function deleteEvidence(session: SessionUser, payload: ActionPayload) {
   const evidence = await requireEditableEvidence(session, payload.evidenceId);
+  // 历史版本中可能有关联证据的成果；删除证据不应删除团队资产或复用记录。
+  await run(sql`UPDATE assets SET source_evidence_id = 0 WHERE source_evidence_id = ${evidence.id}`);
   await run(sql`DELETE FROM evidences WHERE id = ${evidence.id}`);
   await logAction(session.email, "删除晋级证据", "evidence", evidence.id, clean(evidence.title));
 }
@@ -403,13 +439,14 @@ async function reviewDecision(session: SessionUser, payload: ActionPayload) {
   if (session.role !== "admin" && session.role !== "reviewer") throw new Error("没有评审权限");
   if (!payload.reviewId) throw new Error("缺少评审 ID");
   if (!["已通过", "待补证", "未通过"].includes(payload.decision || "")) throw new Error("请选择评审结论");
-  const review = await first<{ id: number; memberId: number; fromLevel: number; targetLevel: number; reviewerEmail: string; frameworkVersionId: number }>(sql`
+  const review = await first<{ id: number; memberId: number; fromLevel: number; targetLevel: number; state: string; reviewerEmail: string; frameworkVersionId: number }>(sql`
     SELECT id, member_id AS "memberId", from_level AS "fromLevel", target_level AS "targetLevel",
-      reviewer_email AS "reviewerEmail", framework_version_id AS "frameworkVersionId"
+      state, reviewer_email AS "reviewerEmail", framework_version_id AS "frameworkVersionId"
     FROM reviews WHERE id = ${payload.reviewId}
   `);
   if (!review) throw new Error("评审不存在");
   if (session.role !== "admin" && review.reviewerEmail !== session.email) throw new Error("只能处理分配给自己的评审");
+  if (!['已提交', '评审中'].includes(review.state)) throw new Error("当前状态不可评审");
   await run(sql`UPDATE reviews SET state = ${payload.decision}, feedback = ${clean(payload.feedback)}, reviewed_at = now() WHERE id = ${review.id}`);
   if (payload.decision === "已通过") {
     // 逐级爬坡防御：即使存量申请的 target_level 跨级，通过时也最多晋升一级
@@ -423,6 +460,7 @@ async function reviewDecision(session: SessionUser, payload: ActionPayload) {
       INSERT INTO level_history (member_id, from_level, to_level, decision, reviewer_email, framework_version_id)
       VALUES (${review.memberId}, ${review.fromLevel}, ${promotedLevel}, '已通过', ${session.email}, ${review.frameworkVersionId})
     `);
+    await publishNominatedEvidenceAssets(review, session);
   } else {
     await run(sql`UPDATE members SET review_status = ${payload.decision}, updated_at = now() WHERE id = ${review.memberId}`);
   }
@@ -446,18 +484,154 @@ async function reviewDecision(session: SessionUser, payload: ActionPayload) {
   }
 }
 
-async function createAsset(session: SessionUser, payload: ActionPayload) {
-  if (!payload.complianceConfirmed) throw new Error("提交成果前必须完成合规自查");
-  if (!payload.title?.trim() || !payload.assetType?.trim() || !payload.industry?.trim()) throw new Error("请完整填写成果信息");
+const ASSET_TYPES = ["Skill", "知识库", "评测集", "原型", "行业实践"];
+const INDUSTRIES = ["高校", "新质", "能源", "政务", "通用"];
+
+/**
+ * 被申请人明确勾选为可复用的证据，会随着同级晋级评审通过直接发布。
+ * 来源证据 ID 让自动发布具备幂等性，也保留了成果与认证材料间的追溯关系。
+ */
+async function publishNominatedEvidenceAssets(
+  review: { id: number; memberId: number; targetLevel: number },
+  reviewer: SessionUser,
+) {
+  const created = await all<{ id: number; title: string }>(sql`
+    INSERT INTO assets (
+      title, description, type, industry, owner_member_id, source_evidence_id,
+      reviewer_email, reviewer_name, review_status, compliance_status, url
+    )
+    SELECT
+      e.title,
+      e.outcome,
+      CASE WHEN e.asset_type IN ('Skill', '知识库', '评测集', '原型', '行业实践') THEN e.asset_type ELSE 'Skill' END,
+      CASE WHEN m.industry IN ('高校', '新质', '能源', '政务', '通用') THEN m.industry ELSE '通用' END,
+      e.member_id,
+      e.id,
+      ${reviewer.email},
+      ${reviewer.displayName},
+      '已发布',
+      '已复核',
+      e.url
+    FROM evidences e
+    JOIN members m ON m.id = e.member_id
+    WHERE e.member_id = ${review.memberId}
+      AND e.level = ${review.targetLevel}
+      AND e.nominate_asset = 1
+      AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.source_evidence_id = e.id)
+    RETURNING id, title
+  `);
+  for (const asset of created) {
+    await logAction(reviewer.email, "晋级通过自动发布成果", "asset", asset.id, `review=${review.id};sourceEvidence=自动同步;title=${asset.title}`);
+  }
+}
+
+function validateAssetInput(payload: ActionPayload) {
+  const title = clean(payload.title);
+  const assetType = clean(payload.assetType);
+  const industry = clean(payload.industry);
+  if (!title || !assetType || !industry) throw new Error("请完整填写成果信息");
+  if (!ASSET_TYPES.includes(assetType)) throw new Error("成果类型不合法");
+  if (!INDUSTRIES.includes(industry)) throw new Error("所属行业不合法");
   const description = String(payload.description || "").trim();
   if (description.length > 500) throw new Error("成果描述最多 500 字");
-  const memberId = await authorizedMemberId(session, payload.memberId);
+  const url = clean(payload.url);
+  if (url && !url.startsWith("http://") && !url.startsWith("https://")) throw new Error("材料链接必须是 http(s) 地址");
+  return { title, assetType, industry, description, url };
+}
+
+async function resolveAssetReviewer(memberId: number, reviewerEmail?: string) {
+  const email = clean(reviewerEmail).toLowerCase();
+  if (!email) throw new Error("请选择成果发布的主评人");
+  const reviewer = await first<{ email: string; displayName: string; role: WorkspaceRole; memberId: number; dingtalkUnionId: string | null }>(sql`
+    SELECT email, display_name AS "displayName", role, member_id AS "memberId", dingtalk_union_id AS "dingtalkUnionId"
+    FROM workspace_users WHERE email = ${email} AND role IN ('reviewer','admin')
+  `);
+  if (!reviewer) throw new Error("所选主评人当前不可用");
+  if (reviewer.memberId === memberId) throw new Error("主评人不能选择自己");
+  return reviewer;
+}
+
+async function createAsset(session: SessionUser, payload: ActionPayload) {
+  if (!payload.complianceConfirmed) throw new Error("提交成果前必须完成合规自查");
+  const { title, assetType, industry, description, url } = validateAssetInput(payload);
+  if (payload.memberId !== undefined && payload.memberId !== session.memberId) throw new Error("只能为本人申请成果发布");
+  const memberId = session.memberId;
+  const reviewer = await resolveAssetReviewer(memberId, payload.reviewerEmail);
   const inserted = await first<{ id: number }>(sql`
-    INSERT INTO assets (title, description, type, industry, owner_member_id, review_status, compliance_status, url)
-    VALUES (${clean(payload.title)}, ${description}, ${clean(payload.assetType)}, ${clean(payload.industry)}, ${memberId}, '待审核', '已自查', ${clean(payload.url)})
+    INSERT INTO assets (title, description, type, industry, owner_member_id, reviewer_email, reviewer_name, review_status, compliance_status, url)
+    VALUES (${title}, ${description}, ${assetType}, ${industry}, ${memberId}, ${reviewer.email}, ${reviewer.displayName}, '待审核', '已自查', ${url})
     RETURNING id
   `);
-  await logAction(session.email, "提交团队成果", "asset", Number(inserted?.id || 0), clean(payload.title));
+  await logAction(session.email, "提交团队成果", "asset", Number(inserted?.id || 0), `${title};reviewer=${reviewer.email}`);
+
+  // 钉钉通知主评人（必须 await：Vercel Serverless 在响应返回后会冻结进程，未 await 的 promise 会被终止）
+  if (reviewer.dingtalkUnionId) {
+    const owner = await first<{ name: string }>(sql`SELECT name FROM members WHERE id = ${memberId}`);
+    await notifyAssetReviewSubmitted({
+      reviewerUnionId: reviewer.dingtalkUnionId,
+      memberName: owner?.name || session.displayName,
+      assetTitle: title,
+      detailUrl: "https://qianwen-growth-os.vercel.app",
+    });
+  } else {
+    console.log("[dingtalk] 跳过通知：主评人未绑定钉钉", reviewer.email);
+  }
+}
+
+// 成果重新进入待审核后，钉钉通知其主评人（未指派主评人则跳过）
+async function notifyAssetReviewer(assetId: number) {
+  const asset = await first<{ title: string; reviewerEmail: string; ownerName: string }>(sql`
+    SELECT a.title, a.reviewer_email AS "reviewerEmail", m.name AS "ownerName"
+    FROM assets a JOIN members m ON m.id = a.owner_member_id WHERE a.id = ${assetId}
+  `);
+  if (!asset?.reviewerEmail) return;
+  const reviewer = await first<{ dingtalkUnionId: string | null }>(sql`
+    SELECT dingtalk_union_id AS "dingtalkUnionId" FROM workspace_users WHERE email = ${asset.reviewerEmail}
+  `);
+  if (!reviewer?.dingtalkUnionId) {
+    console.log("[dingtalk] 跳过通知：主评人未绑定钉钉", asset.reviewerEmail);
+    return;
+  }
+  await notifyAssetReviewSubmitted({
+    reviewerUnionId: reviewer.dingtalkUnionId,
+    memberName: asset.ownerName,
+    assetTitle: asset.title,
+    detailUrl: "https://qianwen-growth-os.vercel.app",
+  });
+}
+
+async function updateAsset(session: SessionUser, payload: ActionPayload) {
+  if (!payload.assetId) throw new Error("缺少成果 ID");
+  const asset = await first<{ id: number; ownerMemberId: number; reviewStatus: string }>(sql`
+    SELECT id, owner_member_id AS "ownerMemberId", review_status AS "reviewStatus" FROM assets WHERE id = ${payload.assetId}
+  `);
+  if (!asset) throw new Error("成果不存在");
+  if (asset.ownerMemberId !== session.memberId) throw new Error("只有成果作者可以更新成果");
+  if (!payload.complianceConfirmed) throw new Error("编辑成果前必须完成合规自查");
+  const { title, assetType, industry, description, url } = validateAssetInput(payload);
+  const reviewer = await resolveAssetReviewer(asset.ownerMemberId, payload.reviewerEmail);
+  // 每次编辑均以新的发布申请进入评审，避免“已发布”内容被静默替换。
+  await run(sql`
+    UPDATE assets SET title = ${title}, description = ${description}, type = ${assetType}, industry = ${industry}, url = ${url},
+      reviewer_email = ${reviewer.email}, reviewer_name = ${reviewer.displayName}, review_status = '待审核',
+      compliance_status = '已自查', review_feedback = '', updated_at = now()
+    WHERE id = ${asset.id}
+  `);
+  await notifyAssetReviewer(asset.id);
+  await logAction(session.email, "编辑团队成果", "asset", asset.id, `from=${asset.reviewStatus}`);
+}
+
+async function trackAssetReuse(session: SessionUser, payload: ActionPayload) {
+  if (!payload.assetId) throw new Error("缺少成果 ID");
+  if (!session.memberId) throw new Error("请先登录后再进行操作");
+  const asset = await first<{ id: number; ownerMemberId: number; reviewStatus: string }>(sql`
+    SELECT id, owner_member_id AS "ownerMemberId", review_status AS "reviewStatus" FROM assets WHERE id = ${payload.assetId}
+  `);
+  if (!asset) throw new Error("成果不存在");
+  if (asset.reviewStatus !== "已发布") throw new Error("只有已发布的成果可以复用");
+  if (asset.ownerMemberId === session.memberId) throw new Error("不能给自己的成果计复用");
+  await run(sql`INSERT INTO asset_reuse_events (asset_id, member_id, event_type) VALUES (${asset.id}, ${session.memberId}, '复制链接')`);
+  await logAction(session.email, "复用成果", "asset", asset.id, `member=${session.memberId}`);
 }
 
 async function resubmitAsset(session: SessionUser, payload: ActionPayload) {
@@ -466,10 +640,12 @@ async function resubmitAsset(session: SessionUser, payload: ActionPayload) {
     SELECT id, owner_member_id AS "ownerMemberId", review_status AS "reviewStatus" FROM assets WHERE id = ${payload.assetId}
   `);
   if (!asset) throw new Error("成果不存在");
-  if (asset.ownerMemberId !== session.memberId && session.role !== "admin") throw new Error("没有修改该成果的权限");
+  if (asset.ownerMemberId !== session.memberId) throw new Error("只有成果作者可以重新提交发布申请");
   if (!["待补充", "已撤回"].includes(asset.reviewStatus)) throw new Error("只有退回待补充或已撤回的成果可以重新提交");
-  await run(sql`UPDATE assets SET review_status = '待审核', updated_at = now() WHERE id = ${asset.id}`);
+  await run(sql`UPDATE assets SET review_status = '待审核', review_feedback = '', updated_at = now() WHERE id = ${asset.id}`);
   await logAction(session.email, "重新提交团队成果", "asset", asset.id, `from=${asset.reviewStatus}`);
+  // 重新通知主评人（必须 await：Vercel Serverless 在响应返回后会冻结进程）
+  await notifyAssetReviewer(asset.id);
 }
 
 async function withdrawAsset(session: SessionUser, payload: ActionPayload) {
@@ -478,20 +654,54 @@ async function withdrawAsset(session: SessionUser, payload: ActionPayload) {
     SELECT id, owner_member_id AS "ownerMemberId", review_status AS "reviewStatus" FROM assets WHERE id = ${payload.assetId}
   `);
   if (!asset) throw new Error("成果不存在");
-  if (asset.ownerMemberId !== session.memberId && session.role !== "admin") throw new Error("没有撤回该成果的权限");
-  if (!["待审核", "审核中"].includes(asset.reviewStatus)) throw new Error("当前状态不可撤回");
+  if (!["待审核", "已发布"].includes(asset.reviewStatus)) throw new Error("当前状态不可撤回");
+  if (asset.reviewStatus === "已发布") {
+    // 下架已发布成果仅管理员可操作
+    if (session.role !== "admin") throw new Error("只有管理员可以下架已发布的成果");
+  } else if (asset.ownerMemberId !== session.memberId) {
+    throw new Error("只有成果作者可以撤回发布申请");
+  }
   await run(sql`UPDATE assets SET review_status = '已撤回', updated_at = now() WHERE id = ${asset.id}`);
-  await logAction(session.email, "撤回团队成果", "asset", asset.id, `from=${asset.reviewStatus}`);
+  await logAction(session.email, asset.reviewStatus === "已发布" ? "下架团队成果" : "撤回团队成果", "asset", asset.id, `from=${asset.reviewStatus}`);
 }
 
 async function reviewAsset(session: SessionUser, payload: ActionPayload) {
-  requireAdmin(session);
+  if (session.role !== "admin" && session.role !== "reviewer") throw new Error("没有成果审核权限");
   if (!payload.assetId || !["已发布", "待补充"].includes(payload.decision || "")) throw new Error("请选择成果审核结论");
+  const asset = await first<{ id: number; title: string; ownerMemberId: number; reviewStatus: string; reviewerEmail: string }>(sql`
+    SELECT id, title, owner_member_id AS "ownerMemberId", review_status AS "reviewStatus", reviewer_email AS "reviewerEmail" FROM assets WHERE id = ${payload.assetId}
+  `);
+  if (!asset) throw new Error("成果不存在");
+  // 利益回避：包括管理员在内，任何人都不能审核自己提交的成果。
+  if (asset.ownerMemberId === session.memberId) throw new Error("不能审核自己提交的成果");
+  if (asset.reviewStatus !== "待审核") throw new Error("当前状态不可审核");
+  // 评审人仅处理明确指派给自己的成果；管理员可处理全部待审核成果。
+  if (session.role === "reviewer" && asset.reviewerEmail !== session.email) throw new Error("只能处理分配给自己的成果评审");
   const feedback = clean(payload.feedback);
   if (payload.decision === "待补充" && !feedback) throw new Error("退回成果时请填写退回原因");
-  // 发布时清空退回原因，保持与状态一致
-  await run(sql`UPDATE assets SET review_status = ${payload.decision}, review_feedback = ${payload.decision === "待补充" ? feedback : ""}, updated_at = now() WHERE id = ${payload.assetId}`);
-  await logAction(session.email, "审核团队成果", "asset", payload.assetId, payload.decision);
+  if (payload.decision === "已发布") {
+    // 发布时清空退回原因并同步合规复核，保持与状态一致
+    await run(sql`UPDATE assets SET review_status = '已发布', compliance_status = '已复核', review_feedback = '', updated_at = now() WHERE id = ${asset.id}`);
+  } else {
+    await run(sql`UPDATE assets SET review_status = '待补充', review_feedback = ${feedback}, updated_at = now() WHERE id = ${asset.id}`);
+  }
+  await logAction(session.email, "审核团队成果", "asset", asset.id, payload.decision);
+
+  // 钉钉通知提交人评审结论（必须 await：Vercel Serverless 在响应返回后会冻结进程，未 await 的 promise 会被终止）
+  const applicantUser = await first<{ email: string; dingtalkUnionId: string | null }>(sql`
+    SELECT email, dingtalk_union_id AS "dingtalkUnionId" FROM workspace_users WHERE member_id = ${asset.ownerMemberId}
+  `);
+  if (applicantUser?.dingtalkUnionId) {
+    await notifyAssetReviewDecision({
+      applicantUnionId: applicantUser.dingtalkUnionId,
+      assetTitle: asset.title,
+      decision: payload.decision!,
+      feedback: payload.decision === "待补充" ? feedback : undefined,
+      detailUrl: "https://qianwen-growth-os.vercel.app",
+    });
+  } else {
+    console.log("[dingtalk] 跳过通知：提交人未绑定钉钉", applicantUser?.email ?? `memberId=${asset.ownerMemberId}`);
+  }
 }
 
 async function createUser(session: SessionUser, payload: ActionPayload) {
@@ -796,7 +1006,7 @@ function normalizeMember(row: Record<string, unknown>) {
     currentLevel: Number(row.currentLevel || 1), selfLevel: Number(row.selfLevel || row.currentLevel || 1), targetLevel: Number(row.targetLevel || 3),
     targetDate: String(row.targetDate || ""), progressStatus: String(row.progressStatus || "进行中"), reviewStatus: String(row.reviewStatus || "草稿"),
     gap: String(row.gap || ""), plan: String(row.plan || ""), nextTask: String(row.nextTask || ""), updatedAt: String(row.updatedAt || ""),
-    evidenceCount: Number(row.evidenceCount || 0), pendingReviewId: row.pendingReviewId ? Number(row.pendingReviewId) : null, overdueTasks: Number(row.overdueTasks || 0),
+    evidenceCount: Number(row.evidenceCount || 0), publishedAssetCount: Number(row.publishedAssetCount || 0), pendingReviewId: row.pendingReviewId ? Number(row.pendingReviewId) : null, overdueTasks: Number(row.overdueTasks || 0),
     checkedInThisMonth: Boolean(Number(row.checkedInThisMonth || 0)),
   };
 }
@@ -819,13 +1029,6 @@ function buildMetrics(members: ReturnType<typeof normalizeMember>[]) {
     evidenceCompletion: Math.min(100, Math.round(members.reduce((sum, member) => sum + member.evidenceCount, 0) / totalEvidenceTarget * 100)),
     distribution, reviewReady: Math.max(0, count - pendingReviews),
   };
-}
-
-function assetTypeForEvidence(kind?: string) {
-  if (kind === "仓库") return "Skill";
-  if (kind === "报告") return "行业实践";
-  if (kind === "演示") return "原型";
-  return "知识库";
 }
 
 function parseJson<T>(value: unknown, fallback: T): T {

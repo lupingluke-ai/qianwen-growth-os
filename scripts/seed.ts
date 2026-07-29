@@ -16,6 +16,7 @@ import bcrypt from "bcryptjs";
 import { count, eq, sql } from "drizzle-orm";
 import { levels as defaultLevels } from "../app/data";
 import {
+  assetReuseEvents,
   assets,
   auditLogs,
   evidences,
@@ -138,13 +139,38 @@ async function main() {
   // Demo assets
   const [assetCount] = await db.select({ value: count() }).from(assets);
   if (!Number(assetCount?.value)) {
-    await db.insert(assets).values([
-      { title: "能源巡检报告 Skill", type: "Skill", industry: "能源", ownerMemberId: byName.get("林晓") || memberRows[0].id, reviewStatus: "已发布", complianceStatus: "已审核", reusePeople: 8, reuseClients: 2, url: "https://github.com/example/energy-skill" },
-      { title: "政策条款智能比对", type: "知识库", industry: "政务", ownerMemberId: byName.get("王璐") || memberRows[0].id, reviewStatus: "待审核", complianceStatus: "已自查", reusePeople: 4, reuseClients: 1, url: "" },
-      { title: "制造业评测方法论", type: "评测集", industry: "新质", ownerMemberId: byName.get("唐峰") || memberRows[0].id, reviewStatus: "已发布", complianceStatus: "已审核", reusePeople: 12, reuseClients: 3, url: "https://github.com/example/ai-eval" },
-      { title: "招生咨询智能体原型", type: "原型", industry: "高校", ownerMemberId: byName.get("周宁") || memberRows[0].id, reviewStatus: "待补充", complianceStatus: "待复核", reusePeople: 2, reuseClients: 0, url: "" },
-    ]);
+    const insertedAssets = await db.insert(assets).values([
+      { title: "能源巡检报告 Skill", type: "Skill", industry: "能源", ownerMemberId: byName.get("林晓") || memberRows[0].id, reviewerEmail: "chenmo@qianwen", reviewerName: "陈墨", reviewStatus: "已发布", complianceStatus: "已复核", url: "https://github.com/example/energy-skill" },
+      { title: "政策条款智能比对", type: "知识库", industry: "政务", ownerMemberId: byName.get("王璐") || memberRows[0].id, reviewerEmail: "zhaokai@qianwen", reviewerName: "赵凯", reviewStatus: "待审核", complianceStatus: "已自查", url: "" },
+      { title: "制造业评测方法论", type: "评测集", industry: "新质", ownerMemberId: byName.get("唐峰") || memberRows[0].id, reviewerEmail: "chenmo@qianwen", reviewerName: "陈墨", reviewStatus: "已发布", complianceStatus: "已复核", url: "https://github.com/example/ai-eval" },
+      { title: "招生咨询智能体原型", type: "原型", industry: "高校", ownerMemberId: byName.get("周宁") || memberRows[0].id, reviewerEmail: "wanglu@qianwen", reviewerName: "王璐", reviewStatus: "待补充", complianceStatus: "已自查", url: "" },
+    ]).returning({ id: assets.id, title: assets.title });
     console.log("✔ 已写入 4 条演示成果");
+
+    // Demo reuse events：仅关联已发布成果；同一成员对同一成果可有多条事件，统计按成员去重
+    const assetByTitle = new Map(insertedAssets.map(row => [row.title, row.id]));
+    const demoReuseEvents = [
+      { assetTitle: "能源巡检报告 Skill", memberName: "陈墨", eventType: "复制链接" },
+      { assetTitle: "能源巡检报告 Skill", memberName: "陈墨", eventType: "复制链接" },
+      { assetTitle: "能源巡检报告 Skill", memberName: "周宁", eventType: "复制链接" },
+      { assetTitle: "能源巡检报告 Skill", memberName: "王璐", eventType: "复制链接" },
+      { assetTitle: "制造业评测方法论", memberName: "赵凯", eventType: "复制链接" },
+      { assetTitle: "制造业评测方法论", memberName: "赵凯", eventType: "复制链接" },
+      { assetTitle: "制造业评测方法论", memberName: "苏雨", eventType: "复制链接" },
+      { assetTitle: "制造业评测方法论", memberName: "方晨", eventType: "复制链接" },
+      { assetTitle: "制造业评测方法论", memberName: "陈墨", eventType: "复制链接" },
+    ];
+    const reuseValues = demoReuseEvents
+      .filter(event => assetByTitle.has(event.assetTitle) && byName.has(event.memberName))
+      .map(event => ({
+        assetId: assetByTitle.get(event.assetTitle)!,
+        memberId: byName.get(event.memberName)!,
+        eventType: event.eventType,
+      }));
+    if (reuseValues.length) {
+      await db.insert(assetReuseEvents).values(reuseValues);
+      console.log(`✔ 已写入 ${reuseValues.length} 条复用事件`);
+    }
   } else {
     console.log("• assets 已有数据，跳过");
   }

@@ -1,8 +1,10 @@
 "use client";
 
 import { type FormEvent, useState } from "react";
+import Image from "next/image";
 import { signIn } from "next-auth/react";
 import { LockKeyhole } from "lucide-react";
+import { qwenworkLogos } from "../brand-assets";
 
 export default function LoginPage() {
   const [showPasswordForm, setShowPasswordForm] = useState(false);
@@ -46,7 +48,7 @@ export default function LoginPage() {
     <main className="login-page">
       <div className="login-card">
         <div className="login-brand">
-          <span className="brand-mark">千</span>
+          <Image className="login-brand-lockup" src={qwenworkLogos.light.src} alt={qwenworkLogos.light.alt} width={975} height={256} priority />
           <div>
             <h1>千问计划</h1>
             <p>AI 能力成长系统</p>

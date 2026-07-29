@@ -46,6 +46,7 @@ export const evidences = pgTable("evidences", {
   outcome: text("outcome").notNull().default(""),
   status: text("status").notNull().default("有效"),
   nominateAsset: integer("nominate_asset").notNull().default(0),
+  assetType: text("asset_type").notNull().default("Skill"),
   createdByEmail: text("created_by_email").notNull(),
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 }, table => [
@@ -99,15 +100,29 @@ export const assets = pgTable("assets", {
   industry: text("industry").notNull(),
   ownerMemberId: integer("owner_member_id").notNull().references(() => members.id),
   sourceEvidenceId: integer("source_evidence_id").notNull().default(0),
+  reviewerEmail: text("reviewer_email").notNull().default(""),
+  reviewerName: text("reviewer_name").notNull().default(""),
   reviewStatus: text("review_status").notNull().default("待审核"),
   reviewFeedback: text("review_feedback"),
   complianceStatus: text("compliance_status").notNull().default("已自查"),
   reusePeople: integer("reuse_people").notNull().default(0),
   reuseClients: integer("reuse_clients").notNull().default(0),
   url: text("url").notNull().default(""),
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
 }, table => [
   index("asset_industry_idx").on(table.industry),
+]);
+
+export const assetReuseEvents = pgTable("asset_reuse_events", {
+  id: serial("id").primaryKey(),
+  assetId: integer("asset_id").notNull().references(() => assets.id),
+  memberId: integer("member_id").notNull().references(() => members.id),
+  eventType: text("event_type").notNull().default("复制链接"),
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+}, table => [
+  index("asset_reuse_asset_idx").on(table.assetId),
+  index("asset_reuse_asset_member_idx").on(table.assetId, table.memberId),
 ]);
 
 export const frameworkVersions = pgTable("framework_versions", {

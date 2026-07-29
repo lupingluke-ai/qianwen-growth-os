@@ -180,6 +180,59 @@ export async function notifyReviewDecision(params: {
   }
 }
 
+// ─── 高级封装：成果发布申请已提交通知（发给主评人）────────────────────────────
+export async function notifyAssetReviewSubmitted(params: {
+  reviewerUnionId: string;
+  memberName: string;
+  assetTitle: string;
+  detailUrl: string;
+}): Promise<void> {
+  try {
+    const userId = await getUsedIdByUnionId(params.reviewerUnionId);
+    if (!userId) return;
+
+    await sendWorkNotification({
+      userId,
+      title: "新的成果发布评审待处理",
+      content: `${params.memberName} 提交了成果「${params.assetTitle}」的发布申请，请及时评审。`,
+      detailUrl: params.detailUrl,
+    });
+  } catch (err) {
+    console.error("[dingtalk] notifyAssetReviewSubmitted 异常:", err);
+  }
+}
+
+// ─── 高级封装：成果评审结论通知（发给提交人）──────────────────────────────────
+export async function notifyAssetReviewDecision(params: {
+  applicantUnionId: string;
+  assetTitle: string;
+  decision: string;
+  feedback?: string;
+  detailUrl: string;
+}): Promise<void> {
+  try {
+    const userId = await getUsedIdByUnionId(params.applicantUnionId);
+    if (!userId) return;
+
+    const decisionText = params.decision === "已发布"
+      ? `恭喜！你的成果「${params.assetTitle}」已审核通过并发布到团队成果库。`
+      : `你的成果「${params.assetTitle}」被退回，需要补充完善。`;
+
+    const content = params.feedback
+      ? `${decisionText}\n评审反馈：${params.feedback.slice(0, 200)}`
+      : decisionText;
+
+    await sendWorkNotification({
+      userId,
+      title: `成果评审结论：${params.decision}`,
+      content,
+      detailUrl: params.detailUrl,
+    });
+  } catch (err) {
+    console.error("[dingtalk] notifyAssetReviewDecision 异常:", err);
+  }
+}
+
 // ─── 高级封装：新问题反馈通知（发给全部已绑定钉钉的管理员）─────────────────────
 export async function notifyNewFeedback(params: {
   adminUnionIds: string[];
